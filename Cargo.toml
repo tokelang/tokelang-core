@@ -1,0 +1,13 @@
+[package]
+name = "tokelang-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tokelang-symbols.workspace = true
+tokelang-parser.workspace = true
+tokelang-compiler.workspace = true
+tokelang-compression.workspace = true
+tokelang-runtime.workspace = true
