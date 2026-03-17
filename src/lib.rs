@@ -12,9 +12,9 @@
 //! let engine = Engine::new();
 //!
 //! let result = engine.compile("Explain quantum entanglement in simple terms").unwrap();
-//! assert_eq!(result.ir.to_compact(), "EXP:QENT:SIMPLE");
+//! assert_eq!(result.program.to_compact(), "⊕ EXP:QENT:SIMPLE");
 //!
-//! let prompt = engine.expand(&result.ir).unwrap();
+//! let prompt = engine.expand(&result.program).unwrap();
 //! assert!(prompt.contains("Explain"));
 //! assert!(prompt.contains("quantum entanglement"));
 //! ```
@@ -26,5 +26,5 @@ pub use engine::{CompileResult, Engine};
 pub use error::EngineError;
 
 pub use tokelang_compression::{CompressedIR, HuffmanTable, PrefixCodeTable};
-pub use tokelang_parser::TokelangIR;
+pub use tokelang_parser::{BlockType, TokelangBlock, TokelangIR, TokelangProgram};
 pub use tokelang_symbols::{Instruction, Modifier};

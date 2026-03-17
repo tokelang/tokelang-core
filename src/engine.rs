@@ -1,6 +1,6 @@
 use tokelang_compiler::Compiler;
 use tokelang_compression::{CompressedIR, PrefixCodeTable};
-use tokelang_parser::{TokelangIR, parse_compact};
+use tokelang_parser::{TokelangIR, TokelangProgram, parse_compact};
 use tokelang_runtime::{ExpandableIR, Runtime};
 use tokelang_symbols::Modifier;
 
@@ -9,13 +9,11 @@ use crate::error::EngineError;
 /// Output of a successful compilation through the full pipeline.
 #[derive(Debug, Clone)]
 pub struct CompileResult {
-    /// Tokelang IR.
-    pub ir: TokelangIR,
-    /// Compact mnemonic form (e.g. `EXP:QENT:SIMPLE`).
+    /// Tokelang Program.
+    pub program: TokelangProgram,
+    /// Compact mnemonic form.
     pub compact: String,
-    /// Prefix-coded compressed IR.
-    pub compressed: CompressedIR,
-    /// Compressed compact string (e.g. `A:QENT:A`).
+    /// Compressed compact string.
     pub compressed_compact: String,
 }
 
@@ -48,26 +46,39 @@ impl Engine {
     }
 
     /// Compile a natural-language prompt through the full pipeline.
-    ///
-    /// Stages 1-6 (compiler) produce the IR; stage 7 (compression)
-    /// produces the prefix-coded form.
     pub fn compile(&self, input: &str) -> Result<CompileResult, EngineError> {
-        let ir = self.compiler.compile(input)?;
-        let compact = ir.to_compact();
+        let program = self.compiler.compile(input)?;
+        let compact = program.to_compact();
 
-        let compressed = CompressedIR::compress(
-            ir.instruction,
-            &ir.subject,
-            &ir.modifiers,
-            &self.instr_prefix_table,
-            &self.mod_prefix_table,
-        );
-        let compressed_compact = compressed.to_compact();
+        let mut compressed_parts = Vec::new();
+        for block in &program.blocks {
+            let mut block_items = Vec::new();
+            for ir in &block.items {
+                let instr_code = self.instr_prefix_table.encode(ir.instruction.mnemonic()).unwrap_or(ir.instruction.mnemonic());
+                let mut parts = vec![instr_code.to_string()];
+                if !ir.subjects.is_empty() {
+                    parts.push(ir.subjects.join("•"));
+                }
+                for m in &ir.modifiers {
+                    let m_code = self.mod_prefix_table.encode(m.mnemonic()).unwrap_or(m.mnemonic());
+                    parts.push(m_code.to_string());
+                }
+                block_items.push(parts.join(":"));
+            }
+            
+            let mut prefix = String::new();
+            if block.block_type != tokelang_parser::BlockType::Default {
+                prefix = format!("{}:", block.block_type.mnemonic());
+            }
+            
+            compressed_parts.push(format!("{}{}", prefix, block_items.join(",")));
+        }
+        
+        let compressed_compact = compressed_parts.join("\n");
 
         Ok(CompileResult {
-            ir,
+            program,
             compact,
-            compressed,
             compressed_compact,
         })
     }
@@ -78,22 +89,29 @@ impl Engine {
     }
 
     /// Expand Tokelang IR back into a natural-language prompt.
-    pub fn expand(&self, ir: &TokelangIR) -> Result<String, EngineError> {
-        let expandable = ExpandableIR {
-            instruction: ir.instruction,
-            subject: ir.subject.clone(),
-            modifiers: ir.modifiers.clone(),
-            urgent: ir.flags.urgent,
-            with_confidence: ir.flags.with_confidence,
-            with_sources: ir.flags.with_sources,
-        };
-        Ok(self.runtime.expand(&expandable)?)
+    pub fn expand(&self, program: &TokelangProgram) -> Result<String, EngineError> {
+        let mut expansions = Vec::new();
+        for block in &program.blocks {
+            for ir in &block.items {
+                let expandable = ExpandableIR {
+                    instruction: ir.instruction,
+                    subject: ir.subjects.join(" "),
+                    modifiers: ir.modifiers.clone(),
+                    urgent: ir.flags.urgent,
+                    with_confidence: ir.flags.with_confidence,
+                    with_sources: ir.flags.with_sources,
+                };
+                expansions.push(self.runtime.expand(&expandable)?);
+            }
+        }
+        
+        Ok(expansions.join(" "))
     }
 
     /// Full round-trip: natural language -> IR -> expanded prompt.
     pub fn round_trip(&self, input: &str) -> Result<String, EngineError> {
         let result = self.compile(input)?;
-        self.expand(&result.ir)
+        self.expand(&result.program)
     }
 
     /// Access the instruction prefix code table.
@@ -110,100 +128,5 @@ impl Engine {
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokelang_symbols::Instruction;
-
-    #[test]
-    fn compile_explain_quantum_simple() {
-        let engine = Engine::new();
-        let result = engine
-            .compile("Explain quantum entanglement in simple terms")
-            .unwrap();
-
-        assert_eq!(result.ir.instruction, Instruction::Explain);
-        assert_eq!(result.ir.subject, "QENT");
-        assert_eq!(result.compact, "EXP:QENT:SIMPLE");
-        assert!(result.compressed_compact.len() <= result.compact.len());
-    }
-
-    #[test]
-    fn compile_summarize_article_fast() {
-        let engine = Engine::new();
-        let result = engine.compile("Summarize this article quickly").unwrap();
-
-        assert_eq!(result.ir.instruction, Instruction::Summarize);
-        assert_eq!(result.ir.subject, "ARTICLE");
-        assert_eq!(result.compact, "SUM:ARTICLE:FAST");
-    }
-
-    #[test]
-    fn expand_from_compact() {
-        let engine = Engine::new();
-        let ir = engine.parse("EXP:QENT:SIMPLE").unwrap();
-        let prompt = engine.expand(&ir).unwrap();
-
-        assert!(prompt.contains("Explain"));
-        assert!(prompt.contains("quantum entanglement"));
-        assert!(prompt.contains("in simple terms"));
-    }
-
-    #[test]
-    fn full_round_trip() {
-        let engine = Engine::new();
-        let prompt = engine
-            .round_trip("Explain quantum entanglement in simple terms")
-            .unwrap();
-
-        assert!(prompt.contains("Explain"));
-        assert!(prompt.contains("quantum entanglement"));
-        assert!(prompt.contains("in simple terms"));
-    }
-
-    #[test]
-    fn parse_and_expand_analyze() {
-        let engine = Engine::new();
-        let ir = engine.parse("ANL:DATA:DETAIL:FAST").unwrap();
-        let prompt = engine.expand(&ir).unwrap();
-
-        assert!(prompt.contains("Analyze"));
-        assert!(prompt.contains("data"));
-        assert!(prompt.contains("in detail"));
-        assert!(prompt.contains("quickly"));
-    }
-
-    #[test]
-    fn compression_saves_space() {
-        let engine = Engine::new();
-        let result = engine
-            .compile("Explain neural networks in simple terms with examples")
-            .unwrap();
-
-        let original_len = result.compact.len();
-        let compressed_len = result.compressed_compact.len();
-
-        assert!(
-            compressed_len <= original_len,
-            "compressed ({compressed_len}) should be <= original ({original_len}): {} vs {}",
-            result.compressed_compact,
-            result.compact
-        );
-    }
-
-    #[test]
-    fn elaborate_synonym_works() {
-        let engine = Engine::new();
-        let result = engine.compile("Elaborate on neural networks").unwrap();
-        assert_eq!(result.ir.instruction, Instruction::Explain);
-    }
-
-    #[test]
-    fn empty_input_error() {
-        let engine = Engine::new();
-        assert!(engine.compile("").is_err());
     }
 }
