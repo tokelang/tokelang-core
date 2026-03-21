@@ -1,9 +1,8 @@
+use crate::compiler::CompileError;
+use crate::ir::ParseError;
 use thiserror::Error;
-use tokelang_compiler::CompileError;
-use tokelang_parser::ParseError;
-use tokelang_runtime::RuntimeError;
 
-/// Unified error type aggregating failures from all subsystems.
+/// Unified engine errors across compilation and compact parsing.
 #[derive(Debug, Error)]
 pub enum EngineError {
     #[error("compilation error: {0}")]
@@ -11,7 +10,4 @@ pub enum EngineError {
 
     #[error("parse error: {0}")]
     Parse(#[from] ParseError),
-
-    #[error("runtime error: {0}")]
-    Runtime(#[from] RuntimeError),
 }
