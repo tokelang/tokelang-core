@@ -43,18 +43,8 @@ impl Compiler {
         let coverage_items = extract_coverage_items(input);
 
         let mut compiled_items = Vec::new();
-        let mut active_instruction = Instruction::Explain;
-
         for clause in clauses {
-            let escaped = normalize::escape_reserved_symbols(&clause.text);
-            let cleaned = normalize::clean_input(&escaped);
-            let words = normalize::tokenize_words(&cleaned);
-
-            if let Ok(inst) = self.detect_instruction(&words) {
-                active_instruction = inst;
-            }
-
-            if let Ok(ir) = self.compile_clause_with_words(&clause, &words, active_instruction) {
+            if let Ok(ir) = self.compile_clause(&clause) {
                 compiled_items.push((clause, ir));
             }
         }
@@ -66,21 +56,7 @@ impl Compiler {
                 text: input.trim().to_string(),
                 marker: None,
             };
-            let escaped = normalize::escape_reserved_symbols(&whole_clause.text);
-            let cleaned = normalize::clean_input(&escaped);
-            let words = normalize::tokenize_words(&cleaned);
-            
-            if let Ok(inst) = self.detect_instruction(&words) {
-                active_instruction = inst;
-            }
-            if let Ok(ir) = self.compile_clause_with_words(&whole_clause, &words, active_instruction) {
-                 compiled_items.push((whole_clause, ir));
-            } else if let Ok(ir) = self.compile_clause_with_words(&whole_clause, &words, Instruction::Explain) {
-                 // Absolute fallback
-                 compiled_items.push((whole_clause, ir));
-            } else {
-                return Err(CompileError::NoSemanticContent);
-            }
+            compiled_items.push((whole_clause.clone(), self.compile_clause(&whole_clause)?));
         }
 
         if let Some((_, first_item)) = compiled_items.first_mut() {
@@ -130,22 +106,22 @@ impl Compiler {
         program
     }
 
-    fn compile_clause_with_words(
-        &self,
-        clause: &ClauseSpan,
-        words: &[String],
-        instruction: Instruction,
-    ) -> Result<TokelangIR, CompileError> {
+    fn compile_clause(&self, clause: &ClauseSpan) -> Result<TokelangIR, CompileError> {
+        let escaped = normalize::escape_reserved_symbols(&clause.text);
+        let cleaned = normalize::clean_input(&escaped);
+        let words = normalize::tokenize_words(&cleaned);
+
         if words.is_empty() {
             return Err(CompileError::NoSemanticContent);
         }
 
-        let flags = self.detect_flags(words);
-        let mut modifiers = self.detect_modifiers(words);
-        let output_hint = self.detect_output_hint(words);
-        let entities = self.extract_entities(words);
-        let relations = self.extract_relations(words, &entities);
-        let residual_terms = self.extract_residual_terms(words, &entities);
+        let instruction = self.detect_instruction(&words)?;
+        let flags = self.detect_flags(&words);
+        let mut modifiers = self.detect_modifiers(&words);
+        let output_hint = self.detect_output_hint(&words);
+        let entities = self.extract_entities(&words);
+        let relations = self.extract_relations(&words, &entities);
+        let residual_terms = self.extract_residual_terms(&words, &entities);
 
         let mut frame = SemanticFrame {
             entities: entities
@@ -156,7 +132,7 @@ impl Compiler {
                 })
                 .collect(),
             relations,
-            output_hint: output_hint.clone(),
+            output_hint,
             residual_terms,
         };
 
@@ -168,12 +144,11 @@ impl Compiler {
             return Err(CompileError::NoSemanticContent);
         }
 
-        if let Some(hint) = frame.output_hint.as_mut() {
-            if hint.target.is_none() {
-                if let Some(entity) = frame.entities.first() {
-                    hint.target = Some(entity.canonical.clone());
-                }
-            }
+        if let Some(output_hint) = frame.output_hint.as_mut()
+            && output_hint.target.is_none()
+            && let Some(entity) = frame.entities.first()
+        {
+            output_hint.target = Some(entity.canonical.clone());
         }
 
         optimize_modifiers(&mut modifiers, instruction);
@@ -629,11 +604,7 @@ mod tests {
                 .to_string(),
             marker: None,
         };
-        let escaped = normalize::escape_reserved_symbols(&clause.text);
-        let cleaned = normalize::clean_input(&escaped);
-        let words = normalize::tokenize_words(&cleaned);
-        
-        let ir = compiler.compile_clause_with_words(&clause, &words, Instruction::Explain).unwrap();
+        let ir = compiler.compile_clause(&clause).unwrap();
         assert!(
             ir.frame
                 .relations
