@@ -53,12 +53,12 @@ impl ContextFlags {
     pub fn to_compact_prefix(&self) -> String {
         let mut parts = Vec::new();
         if let Some(role) = &self.role {
-            parts.push(format!("Φ{}", role));
+            parts.push(format!("Φ {} ", role.replace("•", " ").to_lowercase()));
         }
         if let Some(audience) = &self.audience {
-            parts.push(format!("Ψ{}", audience));
+            parts.push(format!("Ψ {} ", audience.replace("•", " ").to_lowercase()));
         }
-        parts.join(" ")
+        parts.join("").trim().to_string()
     }
 }
 
@@ -175,10 +175,10 @@ impl TokelangIR {
 
         for relation in &self.frame.relations {
             let chunk = format!(
-                "{}{}{}",
-                relation.from,
+                "{} {} {}",
+                relation.from.replace("•", " "),
                 relation.kind.arrow_label(),
-                relation.to
+                relation.to.replace("•", " ")
             );
             if !chunks.contains(&chunk) {
                 chunks.push(chunk);
@@ -243,7 +243,13 @@ impl TokelangIR {
 
         let chunks = self.legacy_subject_chunks();
         if !chunks.is_empty() {
-            output.push_str(&chunks.join("•"));
+            output.push_str(" ");
+            let subject_str = chunks.join(" ").replace("•", " ");
+            output.push_str(&subject_str.to_lowercase());
+        }
+
+        if !self.modifiers.is_empty() {
+            output.push_str(" ");
         }
 
         for modifier in &self.modifiers {
