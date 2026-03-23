@@ -93,10 +93,10 @@ fn parse_item_line(line: &str) -> Result<TokelangIR, ParseError> {
         .ok_or_else(|| ParseError::MissingInstruction(line.to_string()))?;
     let instruction = Instruction::from_mnemonic(&instruction_char.to_string())
         .ok_or_else(|| ParseError::UnknownInstruction(instruction_char.to_string()))?;
-    let payload = chars.as_str();
+    let payload = chars.as_str().trim();
 
     let (subject_payload, modifiers) = split_modifiers(payload);
-    let frame = parse_frame(subject_payload);
+    let frame = parse_frame(subject_payload.trim());
 
     Ok(TokelangIR {
         sequence_id,
@@ -137,12 +137,12 @@ fn split_modifiers(payload: &str) -> (&str, Vec<Modifier>) {
 fn parse_frame(payload: &str) -> SemanticFrame {
     let mut frame = SemanticFrame::default();
 
-    for chunk in payload.split('•').filter(|chunk| !chunk.is_empty()) {
+    for chunk in payload.split(' ').filter(|chunk| !chunk.is_empty()) {
         if chunk.contains('→') {
             let parts = chunk
                 .split('→')
                 .filter(|part| !part.is_empty())
-                .map(|part| part.to_string())
+                .map(|part| part.trim().to_string())
                 .collect::<Vec<_>>();
 
             for window in parts.windows(2) {
