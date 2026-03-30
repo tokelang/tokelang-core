@@ -2,7 +2,7 @@
 
 mod coverage;
 mod error;
-mod normalize;
+pub(crate) mod normalize;
 mod pipeline;
 mod segment;
 

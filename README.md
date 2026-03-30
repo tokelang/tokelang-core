@@ -1,6 +1,6 @@
 # tokelang-core
 
-`tokelang-core` is the production compiler library for Tokelang v0.6.0.
+`tokelang-core` is the production compiler library for Tokelang v0.7.0.
 
 It owns:
 
@@ -9,21 +9,25 @@ It owns:
 - typed semantic IR construction
 - compact Tokelang emission
 - compact Tokelang parsing
+- compile-mode selection between Tokelang and passthrough
 
 ## Public API
 
 ```rust
-use tokelang_core::Engine;
+use tokelang_core::{CompileMode, Engine};
 
 let engine = Engine::new();
 let compiled = engine
     .compile("Explain quantum entanglement in simple terms")
     .unwrap();
 
-let compact = compiled.compact;
-let reparsed = engine.parse_compact(&compact).unwrap();
-
-assert_eq!(compiled.program.to_compact(), reparsed.to_compact());
+match compiled.mode {
+    CompileMode::Tokelang => {
+        let reparsed = engine.parse_compact(&compiled.compact).unwrap();
+        assert_eq!(compiled.program.to_compact(), reparsed.to_compact());
+    }
+    CompileMode::Passthrough => panic!("expected tokelang mode for this prompt"),
+}
 ```
 
 ## Design Notes
