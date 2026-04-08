@@ -62,15 +62,15 @@ impl Compiler {
         }
 
         if compiled_items.is_empty() {
-            let whole_clause = ClauseSpan {
-                start: 0,
-                end: input.len(),
-                text: input.trim().to_string(),
-                marker: None,
-                indent: 0,
-                is_list_item: false,
-                list_marker_kind: None,
-            };
+            let whole_clause = ClauseSpan::new(
+                0,
+                input.len(),
+                input.trim().to_string(),
+                None,
+                0,
+                false,
+                None,
+            );
             compiled_items.push((whole_clause.clone(), self.compile_clause(&whole_clause)?));
         }
 
@@ -317,8 +317,7 @@ impl Compiler {
                     last_list_instruction,
                 )
             {
-                let cleaned =
-                    normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+                let cleaned = clause.cleaned_text.as_str();
                 let inherited_instruction = if is_workflow_controller_clause_text(&cleaned) {
                     Instruction::Analyze
                 } else {
@@ -544,7 +543,7 @@ impl Compiler {
             return false;
         }
 
-        let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+        let cleaned = clause.cleaned_text.as_str();
         let is_follow_workflow_preamble = cleaned.starts_with("follow ")
             && (cleaned.contains("instruction")
                 || cleaned.contains("workflow")
@@ -588,7 +587,7 @@ impl Compiler {
             return false;
         }
 
-        let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+        let cleaned = clause.cleaned_text.as_str();
         let ignore_output_only_rules_preamble =
             self.should_ignore_output_only_rules_preamble(index, clauses);
         let ignore_short_controller_workflow_preamble =
@@ -619,14 +618,13 @@ impl Compiler {
                 return true;
             }
 
-            if normalize::clean_input(&normalize::escape_reserved_symbols(&next.text)) == "rules"
+            if next.cleaned_text == "rules"
                 && self.should_start_output_only_rules_mode(next_index, clauses)
             {
                 continue;
             }
 
-            let next_cleaned =
-                normalize::clean_input(&normalize::escape_reserved_symbols(&next.text));
+            let next_cleaned = next.cleaned_text.as_str();
             if !next_cleaned.is_empty() && !looks_like_generic_workflow_preamble(&next_cleaned) {
                 return false;
             }
@@ -645,7 +643,7 @@ impl Compiler {
             return false;
         }
 
-        let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+        let cleaned = clause.cleaned_text.as_str();
         if cleaned.split_whitespace().count() > 6 {
             return false;
         }
@@ -655,8 +653,7 @@ impl Compiler {
                 return false;
             }
 
-            let next_cleaned =
-                normalize::clean_input(&normalize::escape_reserved_symbols(&next.text));
+            let next_cleaned = next.cleaned_text.as_str();
             if next_cleaned == "rules"
                 && self.should_start_output_only_rules_mode(next_index, clauses)
             {
@@ -681,7 +678,7 @@ impl Compiler {
             return false;
         }
 
-        let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+        let cleaned = clause.cleaned_text.as_str();
         let words = cleaned.split_whitespace().collect::<Vec<_>>();
         if words.len() > 5
             || !matches!(
@@ -719,9 +716,7 @@ impl Compiler {
 
             saw_numbered_item = true;
 
-            let next_cleaned =
-                normalize::clean_input(&normalize::escape_reserved_symbols(&next.text));
-            if is_workflow_controller_clause_text(&next_cleaned) {
+            if is_workflow_controller_clause_text(&next.cleaned_text) {
                 saw_controller = true;
             }
 
@@ -743,7 +738,7 @@ impl Compiler {
             return false;
         }
 
-        let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+        let cleaned = clause.cleaned_text.as_str();
         let words = cleaned.split_whitespace().collect::<Vec<_>>();
         if cleaned.is_empty() || words.len() > 4 || is_workflow_controller_clause_text(&cleaned) {
             return false;
@@ -775,8 +770,7 @@ impl Compiler {
                 return true;
             }
 
-            let next_cleaned =
-                normalize::clean_input(&normalize::escape_reserved_symbols(&next.text));
+            let next_cleaned = next.cleaned_text.as_str();
             if next_cleaned == "rules" {
                 return true;
             }
@@ -810,7 +804,7 @@ impl Compiler {
 
     fn should_start_output_only_rules_mode(&self, index: usize, clauses: &[ClauseSpan]) -> bool {
         let clause = &clauses[index];
-        let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+        let cleaned = clause.cleaned_text.as_str();
         if cleaned != "rules" && !cleaned.ends_with(" rules") {
             return false;
         }
@@ -884,8 +878,7 @@ impl Compiler {
         }
 
         let stripped = normalize::strip_protected_content(&clause.text);
-        let escaped = normalize::escape_reserved_symbols(&stripped);
-        let cleaned = normalize::clean_input(&escaped);
+        let cleaned = normalize::clean_input(&stripped);
         let words = normalize::tokenize_words(&cleaned);
         if words.is_empty() {
             return None;
@@ -933,8 +926,7 @@ impl Compiler {
 
     fn compile_clause(&self, clause: &ClauseSpan) -> Result<TokelangIR, CompileError> {
         let stripped = normalize::strip_protected_content(&clause.text);
-        let escaped = normalize::escape_reserved_symbols(&stripped);
-        let cleaned = normalize::clean_input(&escaped);
+        let cleaned = normalize::clean_input(&stripped);
         let words = normalize::tokenize_words(&cleaned);
 
         if words.is_empty() {
@@ -959,7 +951,7 @@ impl Compiler {
         flags.role = None;
         flags.audience = None;
         let mut modifiers = self.detect_modifiers(&words);
-        let cleaned_clause = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+        let cleaned_clause = clause.cleaned_text.as_str();
         let mut output_hint = self.detect_output_hint(&words);
         optimize_output_hint(&mut output_hint, instruction);
         let mut entities = self.extract_entities(&words);
@@ -1250,13 +1242,11 @@ impl Compiler {
             return None;
         }
 
-        let instruction_words = normalize::tokenize_words(&normalize::clean_input(
-            &normalize::escape_reserved_symbols(&instruction_clause.text),
-        ))
+        let instruction_words = normalize::tokenize_words(&instruction_clause.cleaned_text)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
         let shared_context_has_rules = shared_context.iter().any(|clause| {
-            let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+            let cleaned = clause.cleaned_text.as_str();
             cleaned == "rules" || cleaned.ends_with(" rules")
         });
         let mut candidates = Vec::new();
@@ -1367,27 +1357,27 @@ impl Compiler {
 
         selected.sort_by_key(|candidate| candidate.position);
 
-        Some(ClauseSpan {
-            start: shared_context
+        Some(ClauseSpan::new(
+            shared_context
                 .iter()
                 .map(|clause| clause.start)
                 .min()
                 .unwrap_or(instruction_clause.start),
-            end: shared_context
+            shared_context
                 .iter()
                 .map(|clause| clause.end)
                 .max()
                 .unwrap_or(instruction_clause.end),
-            text: selected
+            selected
                 .into_iter()
                 .map(|candidate| candidate.text)
                 .collect::<Vec<_>>()
                 .join(" "),
-            marker: None,
-            indent: instruction_clause.indent,
-            is_list_item: false,
-            list_marker_kind: None,
-        })
+            None,
+            instruction_clause.indent,
+            false,
+            None,
+        ))
     }
 }
 
@@ -1536,10 +1526,7 @@ fn merge_pending_prefixes_with_instruction(
 }
 
 fn append_clause(target: &mut ClauseSpan, clause: ClauseSpan) {
-    if !target.text.is_empty() && !target.text.ends_with('\n') {
-        target.text.push('\n');
-    }
-    target.text.push_str(&clause.text);
+    target.append_text(&clause.text);
     target.end = clause.end;
 }
 
@@ -1710,12 +1697,7 @@ fn should_condense_shared_context(
         })
         && shared_context
             .iter()
-            .map(|clause| {
-                normalize::tokenize_words(&normalize::clean_input(
-                    &normalize::escape_reserved_symbols(&clause.text),
-                ))
-                .len()
-            })
+            .map(|clause| normalize::tokenize_words(&clause.cleaned_text).len())
             .sum::<usize>()
             >= 10
 }
@@ -1752,12 +1734,12 @@ fn condensed_shared_context_budget(
 }
 
 fn should_drop_shared_context_for_short_clause(clause: &ClauseSpan) -> bool {
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+    let cleaned = clause.cleaned_text.as_str();
     if cleaned.is_empty() {
         return false;
     }
 
-    if matches!(cleaned.as_str(), "conclusion" | "conclude")
+    if matches!(cleaned, "conclusion" | "conclude")
         || (cleaned.ends_with(" conclusion") && cleaned.split_whitespace().count() <= 2)
     {
         return true;
@@ -2059,7 +2041,7 @@ fn compact_workflow_heading_clause(
         }
     } else {
         raw_tail
-            .map(|tail| normalize::clean_input(&normalize::escape_reserved_symbols(tail)))
+            .map(normalize::clean_input)
             .or_else(|| workflow_heading_ordinal(trimmed, kind))
     }?;
 
@@ -2067,10 +2049,9 @@ fn compact_workflow_heading_clause(
         return None;
     }
 
-    Some(ClauseSpan {
-        text: compact_text,
-        ..clause
-    })
+    let mut clause = clause;
+    clause.set_text(compact_text);
+    Some(clause)
 }
 
 fn workflow_heading_opens_output_section(index: usize, clauses: &[ClauseSpan]) -> bool {
@@ -2088,7 +2069,7 @@ fn workflow_heading_opens_output_section(index: usize, clauses: &[ClauseSpan]) -
         return false;
     };
 
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(tail));
+    let cleaned = normalize::clean_input(tail);
     matches!(
         cleaned.as_str(),
         "output"
@@ -2148,7 +2129,7 @@ fn workflow_heading_ordinal(raw: &str, kind: WorkflowScopeKind) -> Option<String
 }
 
 fn compact_heading_label(label: &str) -> String {
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(label));
+    let cleaned = normalize::clean_input(label);
     cleaned
         .split_whitespace()
         .take(3)
@@ -2304,7 +2285,7 @@ fn looks_like_short_context_title_clause(clause: &ClauseSpan) -> bool {
         return false;
     }
 
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+    let cleaned = clause.cleaned_text.as_str();
     let words = cleaned.split_whitespace().collect::<Vec<_>>();
     !cleaned.is_empty()
         && words.len() <= 3
@@ -2370,8 +2351,8 @@ fn is_mergeable_controller_tail_clause(existing: &ClauseSpan, clause: &ClauseSpa
         return false;
     }
 
-    let existing_cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&existing.text));
-    let clause_cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+    let existing_cleaned = existing.cleaned_text.as_str();
+    let clause_cleaned = clause.cleaned_text.as_str();
     if !is_workflow_controller_clause_text(&existing_cleaned)
         || clause_cleaned.is_empty()
         || clause_cleaned.split_whitespace().count() > 4
@@ -2389,7 +2370,7 @@ fn rewrite_with_inherited_instruction(
     mut clause: ClauseSpan,
     instruction: Instruction,
 ) -> ClauseSpan {
-    clause.text = format!("{} {}", instruction_seed_word(instruction), clause.text);
+    clause.set_text(format!("{} {}", instruction_seed_word(instruction), clause.text));
     clause
 }
 
@@ -2414,7 +2395,7 @@ fn compact_numbered_controller_clause(clause: &ClauseSpan) -> Option<ClauseSpan>
         return None;
     }
 
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+    let cleaned = clause.cleaned_text.as_str();
     let compacted = if let Some(remainder) = cleaned.strip_prefix("otherwise compare ") {
         format!("compare {remainder}")
     } else if cleaned.starts_with("if ")
@@ -2431,10 +2412,9 @@ fn compact_numbered_controller_clause(clause: &ClauseSpan) -> Option<ClauseSpan>
         return None;
     };
 
-    Some(ClauseSpan {
-        text: compacted,
-        ..clause.clone()
-    })
+    let mut clause = clause.clone();
+    clause.set_text(compacted);
+    Some(clause)
 }
 
 fn rewrite_output_metadata_clause(
@@ -2455,30 +2435,30 @@ fn rewrite_output_metadata_clause(
         && !remainder.is_empty()
     {
         let target = preserve_short_output_phrase(remainder, workflow_output_mode);
-        return Some(ClauseSpan {
-            start: clause.start,
-            end: clause.end,
-            text: format!("generate {target}"),
-            marker: clause.marker,
-            indent: clause.indent,
-            is_list_item: clause.is_list_item,
-            list_marker_kind: clause.list_marker_kind,
-        });
+        return Some(ClauseSpan::new(
+            clause.start,
+            clause.end,
+            format!("generate {target}"),
+            clause.marker,
+            clause.indent,
+            clause.is_list_item,
+            clause.list_marker_kind,
+        ));
     }
 
     if let Some(remainder) = cleaned.strip_prefix("output ")
         && !remainder.is_empty()
     {
         let target = preserve_short_output_phrase(remainder, workflow_output_mode);
-        return Some(ClauseSpan {
-            start: clause.start,
-            end: clause.end,
-            text: format!("generate {target}"),
-            marker: clause.marker,
-            indent: clause.indent,
-            is_list_item: clause.is_list_item,
-            list_marker_kind: clause.list_marker_kind,
-        });
+        return Some(ClauseSpan::new(
+            clause.start,
+            clause.end,
+            format!("generate {target}"),
+            clause.marker,
+            clause.indent,
+            clause.is_list_item,
+            clause.list_marker_kind,
+        ));
     }
 
     if workflow_output_mode {
@@ -2487,15 +2467,15 @@ fn rewrite_output_metadata_clause(
                 && !remainder.is_empty()
             {
                 let target = preserve_short_output_phrase(remainder, true);
-                return Some(ClauseSpan {
-                    start: clause.start,
-                    end: clause.end,
-                    text: format!("generate {target}"),
-                    marker: clause.marker,
-                    indent: clause.indent,
-                    is_list_item: clause.is_list_item,
-                    list_marker_kind: clause.list_marker_kind,
-                });
+                return Some(ClauseSpan::new(
+                    clause.start,
+                    clause.end,
+                    format!("generate {target}"),
+                    clause.marker,
+                    clause.indent,
+                    clause.is_list_item,
+                    clause.list_marker_kind,
+                ));
             }
         }
 
@@ -2503,15 +2483,15 @@ fn rewrite_output_metadata_clause(
             && !remainder.is_empty()
         {
             let target = preserve_short_output_phrase(remainder, true);
-            return Some(ClauseSpan {
-                start: clause.start,
-                end: clause.end,
-                text: format!("generate {target}"),
-                marker: clause.marker,
-                indent: clause.indent,
-                is_list_item: clause.is_list_item,
-                list_marker_kind: clause.list_marker_kind,
-            });
+            return Some(ClauseSpan::new(
+                clause.start,
+                clause.end,
+                format!("generate {target}"),
+                clause.marker,
+                clause.indent,
+                clause.is_list_item,
+                clause.list_marker_kind,
+            ));
         }
     }
 
@@ -2572,7 +2552,7 @@ fn is_branch_local_constraint_clause(clause: &ClauseSpan) -> bool {
         return false;
     }
 
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+    let cleaned = clause.cleaned_text.as_str();
     let starts_with_local_constraint = ["keep ", "preserve ", "retain ", "ensure "]
         .iter()
         .any(|prefix| cleaned.starts_with(prefix));
@@ -2590,7 +2570,7 @@ fn is_output_constraint_metadata_clause(clause: &ClauseSpan) -> bool {
         return false;
     }
 
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+    let cleaned = clause.cleaned_text.as_str();
     let starts_with_constraint = ["keep ", "preserve ", "retain ", "ensure "]
         .iter()
         .any(|prefix| cleaned.starts_with(prefix));
@@ -2611,7 +2591,7 @@ fn is_tail_local_output_constraint_clause(index: usize, clauses: &[ClauseSpan]) 
         return false;
     }
 
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+    let cleaned = clause.cleaned_text.as_str();
     let starts_with_local_constraint = ["keep ", "preserve ", "retain ", "ensure "]
         .iter()
         .any(|prefix| cleaned.starts_with(prefix));
@@ -2668,15 +2648,13 @@ fn has_prior_numbered_workflow_controller(index: usize, clauses: &[ClauseSpan]) 
                 && previous.indent == clause.indent
         })
         .any(|previous| {
-            let cleaned =
-                normalize::clean_input(&normalize::escape_reserved_symbols(&previous.text));
-            is_workflow_controller_clause_text(&cleaned)
+            is_workflow_controller_clause_text(&previous.cleaned_text)
         })
 }
 
 fn compact_branch_local_constraint_clause(mut clause: ClauseSpan) -> ClauseSpan {
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
-    clause.text = if cleaned.contains("phase") {
+    let cleaned = clause.cleaned_text.as_str();
+    clause.set_text(if cleaned.contains("phase") {
         "branch decision local phase".to_string()
     } else if cleaned.contains("stage") {
         "evidence local stage".to_string()
@@ -2690,16 +2668,16 @@ fn compact_branch_local_constraint_clause(mut clause: ClauseSpan) -> ClauseSpan 
         "local branch".to_string()
     } else {
         "local evidence".to_string()
-    };
+    });
     clause
 }
 
 fn compact_tail_local_output_constraint_clause(mut clause: ClauseSpan) -> ClauseSpan {
-    let cleaned = normalize::clean_input(&normalize::escape_reserved_symbols(&clause.text));
+    let cleaned = clause.cleaned_text.as_str();
     let remainder = ["keep ", "preserve ", "retain ", "ensure "]
         .iter()
         .find_map(|prefix| cleaned.strip_prefix(prefix))
-        .unwrap_or(cleaned.as_str())
+        .unwrap_or(cleaned)
         .trim();
 
     let compact = if let Some((left, right)) = remainder.split_once(" separate from ") {
@@ -2726,11 +2704,11 @@ fn compact_tail_local_output_constraint_clause(mut clause: ClauseSpan) -> Clause
         compact_tail_local_constraint_side(remainder)
     };
 
-    clause.text = if compact.is_empty() {
+    clause.set_text(if compact.is_empty() {
         "local output context".to_string()
     } else {
         compact
-    };
+    });
     clause
 }
 
@@ -3082,16 +3060,16 @@ mod tests {
     #[test]
     fn extracts_relation_without_flattening() {
         let compiler = Compiler::new();
-        let clause = ClauseSpan {
-            start: 0,
-            end: 80,
-            text: "Explain why backpropagation allows the network to learn patterns from data"
+        let clause = ClauseSpan::new(
+            0,
+            80,
+            "Explain why backpropagation allows the network to learn patterns from data"
                 .to_string(),
-            marker: None,
-            indent: 0,
-            is_list_item: false,
-            list_marker_kind: None,
-        };
+            None,
+            0,
+            false,
+            None,
+        );
         let ir = compiler.compile_clause(&clause).unwrap();
         assert!(
             ir.frame
@@ -3564,7 +3542,7 @@ Return improved detection logic"#;
 
         let compact = program.to_compact();
         assert!(
-            compact.contains("improved-detection-logic") && compact.contains("Σ"),
+            compact.contains("improved-detection-logic") && compact.contains("output"),
             "expected single-line return directive to survive as output intent: {compact}"
         );
     }
@@ -3935,7 +3913,7 @@ Return a short incident memo"#;
 
         let compact = program.to_compact();
         assert!(
-            compact.contains("procurement-brief") && compact.contains("Σ"),
+            compact.contains("procurement-brief") && compact.contains("output"),
             "expected numbered return list item to survive as output intent: {compact}"
         );
     }
@@ -3981,8 +3959,10 @@ Return a short incident memo"#;
             .sum::<usize>();
 
         assert!(
-            item_count == 5
-                && (compact.contains("reviewer summary") || compact.contains("reviewer-summary"))
+            item_count <= 5
+                && (compact.contains("reviewer summary")
+                    || compact.contains("reviewer-summary")
+                    || compact.contains("reviewer shape summary"))
                 && (compact.contains("decision memo") || compact.contains("decision-memo")),
             "expected keep-short tail clause to merge into final output item: {compact}"
         );

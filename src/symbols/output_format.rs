@@ -14,23 +14,23 @@ pub enum OutputFormat {
 impl OutputFormat {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Report => "REPORT",
-            Self::List => "LIST",
-            Self::Summary => "SUMMARY",
-            Self::Comparison => "COMPARISON",
-            Self::Definition => "DEFINITION",
-            Self::Table => "TABLE",
+            Self::Report => "report",
+            Self::List => "list",
+            Self::Summary => "summary",
+            Self::Comparison => "comparison",
+            Self::Definition => "definition",
+            Self::Table => "table",
         }
     }
 
     pub fn from_label(label: &str) -> Option<Self> {
-        match label {
-            "REPORT" => Some(Self::Report),
-            "LIST" => Some(Self::List),
-            "SUMMARY" => Some(Self::Summary),
-            "COMPARISON" => Some(Self::Comparison),
-            "DEFINITION" => Some(Self::Definition),
-            "TABLE" => Some(Self::Table),
+        match label.trim().to_ascii_lowercase().as_str() {
+            "report" => Some(Self::Report),
+            "list" => Some(Self::List),
+            "summary" => Some(Self::Summary),
+            "comparison" => Some(Self::Comparison),
+            "define" | "definition" => Some(Self::Definition),
+            "table" => Some(Self::Table),
             _ => None,
         }
     }

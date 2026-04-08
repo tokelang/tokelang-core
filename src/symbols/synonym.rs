@@ -53,16 +53,18 @@ impl SynonymTable {
         match word.as_str() {
             "simple" | "simply" | "easy" | "plain" | "basic" | "layman" => Some(Modifier::Simple),
             "brief" | "briefly" | "short" | "concise" | "succinct" => Some(Modifier::Brief),
-            "detailed" | "comprehensive" | "thorough" | "in-depth" | "complete" | "carefully"
-            | "thoroughly" | "deep" | "deeply" => Some(Modifier::Detailed),
+            "detail" | "detailed" | "comprehensive" | "thorough" | "in-depth" | "complete"
+            | "carefully" | "thoroughly" | "deep" | "deeply" => Some(Modifier::Detailed),
             "fast" | "quick" | "quickly" | "rapid" | "immediately" | "urgent" | "urgently"
             | "asap" => Some(Modifier::Fast),
-            "formal" | "formally" | "professional" | "academic" => Some(Modifier::Formal),
+            "formal" | "formally" | "professional" | "academic" | "business" => {
+                Some(Modifier::Formal)
+            }
             "technical" | "advanced" | "specialized" | "expert" => Some(Modifier::Technical),
             "creative" | "creatively" | "novel" | "innovative" | "imaginative" => {
                 Some(Modifier::Creative)
             }
-            "step-by-step" | "step by step" | "stepwise" | "sequential" => {
+            "step-by-step" | "step by step" | "stepwise" | "sequential" | "ordered" => {
                 Some(Modifier::StepByStep)
             }
             "examples" | "with examples" | "illustrated" | "sample" => Some(Modifier::WithExamples),

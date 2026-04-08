@@ -19,35 +19,31 @@ pub enum Modifier {
 impl Modifier {
     pub fn mnemonic(&self) -> &'static str {
         match self {
-            Self::Simple => "α",
-            Self::Brief => "β",
-            Self::Detailed => "γ",
-            Self::Fast => "δ",
-            Self::Formal => "ε",
-            Self::Technical => "ζ",
-            Self::Creative => "η",
-            Self::StepByStep => "θ",
-            Self::WithExamples => "¨",
-            Self::Structured => "κ",
+            Self::Simple => "simple",
+            Self::Brief => "brief",
+            Self::Detailed => "detail",
+            Self::Fast => "fast",
+            Self::Formal => "professional",
+            Self::Technical => "technical",
+            Self::Creative => "creative",
+            Self::StepByStep => "ordered",
+            Self::WithExamples => "examples",
+            Self::Structured => "structured",
         }
     }
 
-    pub fn mnemonic_char(&self) -> char {
-        self.mnemonic().chars().next().unwrap_or_default()
-    }
-
     pub fn from_mnemonic(s: &str) -> Option<Self> {
-        match s {
-            "α" => Some(Self::Simple),
-            "β" => Some(Self::Brief),
-            "γ" => Some(Self::Detailed),
-            "δ" => Some(Self::Fast),
-            "ε" => Some(Self::Formal),
-            "ζ" => Some(Self::Technical),
-            "η" => Some(Self::Creative),
-            "θ" => Some(Self::StepByStep),
-            "¨" => Some(Self::WithExamples),
-            "κ" => Some(Self::Structured),
+        match s.trim().to_ascii_lowercase().as_str() {
+            "simple" => Some(Self::Simple),
+            "brief" => Some(Self::Brief),
+            "detail" | "detailed" => Some(Self::Detailed),
+            "fast" => Some(Self::Fast),
+            "professional" | "formal" => Some(Self::Formal),
+            "technical" => Some(Self::Technical),
+            "creative" => Some(Self::Creative),
+            "ordered" | "steps" | "stepwise" => Some(Self::StepByStep),
+            "examples" => Some(Self::WithExamples),
+            "structured" => Some(Self::Structured),
             _ => None,
         }
     }
@@ -58,10 +54,10 @@ impl Modifier {
             Self::Brief => "briefly",
             Self::Detailed => "in detail",
             Self::Fast => "quickly",
-            Self::Formal => "in a formal tone",
+            Self::Formal => "in a professional tone",
             Self::Technical => "using technical language",
             Self::Creative => "creatively",
-            Self::StepByStep => "step by step",
+            Self::StepByStep => "in ordered steps",
             Self::WithExamples => "with examples",
             Self::Structured => "in a structured format",
         }

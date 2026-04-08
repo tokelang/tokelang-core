@@ -15,18 +15,18 @@ pub enum BlockType {
 impl BlockType {
     pub fn marker(&self) -> Option<&'static str> {
         match self {
-            Self::Input => Some("↹"),
-            Self::Process => Some("§"),
-            Self::Output => Some("Σ"),
+            Self::Input => Some("input"),
+            Self::Process => Some("process"),
+            Self::Output => Some("output"),
             Self::Default => None,
         }
     }
 
     pub fn from_marker(marker: &str) -> Option<Self> {
-        match marker {
-            "↹" => Some(Self::Input),
-            "§" => Some(Self::Process),
-            "Σ" => Some(Self::Output),
+        match marker.trim().to_ascii_lowercase().as_str() {
+            "input" => Some(Self::Input),
+            "process" => Some(Self::Process),
+            "output" => Some(Self::Output),
             _ => None,
         }
     }
@@ -51,14 +51,7 @@ pub struct ContextFlags {
 
 impl ContextFlags {
     pub fn to_compact_prefix(&self) -> String {
-        let mut parts = Vec::new();
-        if let Some(role) = &self.role {
-            parts.push(format!("Φ {} ", role.replace("•", " ").to_lowercase()));
-        }
-        if let Some(audience) = &self.audience {
-            parts.push(format!("Ψ {} ", audience.replace("•", " ").to_lowercase()));
-        }
-        parts.join("").trim().to_string()
+        String::new()
     }
 }
 
@@ -94,11 +87,11 @@ impl RelationKind {
 
     pub fn natural_phrase(&self) -> &'static str {
         match self {
-            Self::LeadsTo => "leads to",
+            Self::LeadsTo => "leads",
             Self::Causes => "causes",
             Self::Requires => "requires",
             Self::Enables => "enables",
-            Self::Sequence => "then moves to",
+            Self::Sequence => "then",
         }
     }
 }
@@ -177,7 +170,7 @@ impl TokelangIR {
             let chunk = format!(
                 "{} {} {}",
                 relation.from.replace("•", " "),
-                relation.kind.arrow_label(),
+                relation.kind.natural_phrase(),
                 relation.to.replace("•", " ")
             );
             if !chunks.contains(&chunk) {
@@ -192,7 +185,7 @@ impl TokelangIR {
                 chunks.push(target.clone());
             }
             if let Some(format) = output_hint.format {
-                let label = format.label().to_string();
+                let label = format!("shape {}", format.label());
                 if !chunks.contains(&label) {
                     chunks.push(label);
                 }
@@ -233,30 +226,25 @@ impl TokelangIR {
     }
 
     pub fn to_compact(&self) -> String {
-        let mut output = String::new();
+        let mut parts = Vec::new();
 
         if let Some(sequence_id) = self.sequence_id {
-            output.push_str(&format!("{sequence_id}>"));
+            parts.push(sequence_id.to_string());
         }
 
-        output.push_str(self.instruction.mnemonic());
+        parts.push(self.instruction.mnemonic().to_string());
 
         let chunks = self.legacy_subject_chunks();
         if !chunks.is_empty() {
-            output.push_str(" ");
             let subject_str = chunks.join(" ").replace("•", " ");
-            output.push_str(&subject_str.to_lowercase());
-        }
-
-        if !self.modifiers.is_empty() {
-            output.push_str(" ");
+            parts.push(subject_str.to_lowercase());
         }
 
         for modifier in &self.modifiers {
-            output.push_str(modifier.mnemonic());
+            parts.push(modifier.mnemonic().to_string());
         }
 
-        output
+        parts.join(" ")
     }
 }
 

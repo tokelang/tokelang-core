@@ -144,8 +144,8 @@ static DESCRIPTOR_WORDS: &[&str] = &[
 ];
 
 static COMMON_NOISE_CHARS: &[char] = &[
-    '¨', '©', 'ª', '«', '¬', '®', '¯', '°', '±', '²', '³', 'µ', '¶', '¹', 'º', '»', '¼', '½', '¾',
-    'À', 'Á',
+    '¡', '¢', '£', '¤', '¥', '¦', '§', '¨', '©', 'ª', '«', '¬', '®', '¯', '°', '±', '²', '³',
+    'µ', '¶', '¹', 'º', '»', '¼', '½', '¾', '¿', 'À', 'Á', 'Ξ',
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,39 +154,40 @@ pub(crate) struct ProtectedContentStats {
     pub protected_chars: usize,
 }
 
-pub fn escape_reserved_symbols(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len());
-    for character in input.chars() {
-        if is_reserved_symbol(character) {
-            escaped.push('Ξ');
-        }
-        escaped.push(character);
-    }
-    escaped
+pub fn escape_reserved_symbols(input: &str) -> &str {
+    input
 }
 
 pub fn clean_input(input: &str) -> String {
-    input
-        .chars()
-        .map(|character| {
-            if character.is_alphanumeric()
-                || character.is_whitespace()
-                || character == '-'
-                || is_reserved_symbol(character)
-            {
-                if is_reserved_symbol(character) {
-                    character
-                } else {
-                    character.to_ascii_lowercase()
-                }
+    let mut cleaned = String::with_capacity(input.len());
+    let mut needs_space = false;
+
+    for character in input.chars() {
+        let normalized = if character.is_alphanumeric()
+            || character == '-'
+            || is_reserved_symbol(character)
+        {
+            Some(if is_reserved_symbol(character) {
+                character
             } else {
-                ' '
+                character.to_ascii_lowercase()
+            })
+        } else {
+            None
+        };
+
+        if let Some(character) = normalized {
+            if needs_space && !cleaned.is_empty() {
+                cleaned.push(' ');
             }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+            cleaned.push(character);
+            needs_space = false;
+        } else if character.is_whitespace() || !character.is_alphanumeric() {
+            needs_space = !cleaned.is_empty();
+        }
+    }
+
+    cleaned
 }
 
 pub fn tokenize_words(text: &str) -> Vec<String> {
@@ -287,7 +288,7 @@ fn normalize_token(token: &str) -> Option<String> {
 }
 
 fn is_noise_boundary_char(character: char) -> bool {
-    character == 'Ξ' || is_reserved_symbol(character) || COMMON_NOISE_CHARS.contains(&character)
+    is_reserved_symbol(character) || COMMON_NOISE_CHARS.contains(&character)
 }
 
 fn is_noise_only_token(token: &str) -> bool {

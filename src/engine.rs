@@ -56,13 +56,17 @@ impl Engine {
     }
 
     pub fn compile(&self, input: &str) -> Result<CompileResult, EngineError> {
+        if self.protected_content_demands_passthrough(input) {
+            return Ok(CompileResult {
+                program: TokelangProgram::default(),
+                compact: input.to_string(),
+                mode: CompileMode::Passthrough,
+            });
+        }
+
         let program = self.compiler.compile(input)?;
         let tokelang_compact = program.to_compact();
-        let mode = if self.protected_content_demands_passthrough(input) {
-            CompileMode::Passthrough
-        } else {
-            self.output_mode(input, &tokelang_compact)
-        };
+        let mode = self.output_mode(input, &tokelang_compact);
         let compact = match mode {
             CompileMode::Tokelang => tokelang_compact,
             CompileMode::Passthrough => input.to_string(),
@@ -78,6 +82,10 @@ impl Engine {
         Ok(TokelangProgram::parse_compact(input)?)
     }
 
+    pub fn candidate_program(&self, input: &str) -> Result<TokelangProgram, EngineError> {
+        Ok(self.compiler.compile(input)?)
+    }
+
     pub fn passthrough_threshold_pct(&self) -> f64 {
         MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG
     }
@@ -85,9 +93,8 @@ impl Engine {
     pub fn passthrough_diagnostics(&self, input: &str) -> PassthroughDiagnostics {
         let stats = normalize::protected_content_stats(input);
         let stripped = normalize::strip_protected_content(input);
-        let escaped = normalize::escape_reserved_symbols(&stripped);
-        let cleaned = normalize::clean_input(&escaped);
-        let words = normalize::tokenize_words(&cleaned);
+        let cleaned = normalize::clean_input(&stripped);
+        let natural_language_word_count = cleaned.split_whitespace().count();
         let protected_ratio_pct = if stats.total_chars == 0 {
             0.0
         } else {
@@ -98,11 +105,11 @@ impl Engine {
             protected_chars: stats.protected_chars,
             total_chars: stats.total_chars,
             protected_ratio_pct,
-            natural_language_word_count: words.len(),
+            natural_language_word_count,
             protected_content_passthrough: stats.total_chars != 0
                 && stats.protected_chars != 0
                 && stats.protected_chars * 100 >= stats.total_chars * 40
-                && words.len() < 16,
+                && natural_language_word_count < 16,
             passthrough_threshold_pct: MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG,
         }
     }
@@ -127,24 +134,43 @@ impl Engine {
     fn protected_content_demands_passthrough(&self, input: &str) -> bool {
         let diagnostics = self.passthrough_diagnostics(input);
         let lowered = input.to_ascii_lowercase();
+        let workflow_scaffold = has_workflow_scaffold(input);
         diagnostics.protected_content_passthrough
-            || demands_fenced_code_passthrough(input, diagnostics.natural_language_word_count)
-            || demands_math_passthrough(input, diagnostics.natural_language_word_count)
+            || demands_fenced_code_passthrough(
+                &lowered,
+                diagnostics.natural_language_word_count,
+                workflow_scaffold,
+            )
+            || demands_math_passthrough(
+                input,
+                &lowered,
+                diagnostics.natural_language_word_count,
+                workflow_scaffold,
+            )
             || demands_row_heavy_passthrough(
                 input,
                 &lowered,
                 diagnostics.natural_language_word_count,
+                workflow_scaffold,
             )
-            || demands_contract_sensitive_passthrough(input, diagnostics.natural_language_word_count)
+            || demands_separation_sensitive_passthrough(&lowered, workflow_scaffold)
+            || demands_contract_sensitive_passthrough(
+                &lowered,
+                diagnostics.natural_language_word_count,
+                workflow_scaffold,
+            )
     }
 }
 
-fn demands_fenced_code_passthrough(input: &str, natural_language_word_count: usize) -> bool {
-    if !input.contains("```") || natural_language_word_count >= 48 {
+fn demands_fenced_code_passthrough(
+    lowered: &str,
+    natural_language_word_count: usize,
+    workflow_scaffold: bool,
+) -> bool {
+    if !lowered.contains("```") || natural_language_word_count >= 48 {
         return false;
     }
 
-    let lowered = input.to_ascii_lowercase();
     let explicit_code_context = [
         "code",
         "function",
@@ -160,15 +186,19 @@ fn demands_fenced_code_passthrough(input: &str, natural_language_word_count: usi
     .iter()
     .any(|needle| lowered.contains(needle));
 
-    explicit_code_context || !has_workflow_scaffold(input)
+    explicit_code_context || !workflow_scaffold
 }
 
-fn demands_math_passthrough(input: &str, natural_language_word_count: usize) -> bool {
-    if natural_language_word_count >= 56 || has_workflow_scaffold(input) {
+fn demands_math_passthrough(
+    input: &str,
+    lowered: &str,
+    natural_language_word_count: usize,
+    workflow_scaffold: bool,
+) -> bool {
+    if natural_language_word_count >= 56 || workflow_scaffold {
         return false;
     }
 
-    let lowered = input.to_ascii_lowercase();
     let equation_payload = input
         .lines()
         .map(str::trim)
@@ -250,18 +280,48 @@ fn demands_math_passthrough(input: &str, natural_language_word_count: usize) -> 
         || math_topic_hits >= 2
 }
 
-fn demands_contract_sensitive_passthrough(input: &str, natural_language_word_count: usize) -> bool {
-    if natural_language_word_count >= 32 || has_workflow_scaffold(input) {
+fn demands_contract_sensitive_passthrough(
+    lowered: &str,
+    natural_language_word_count: usize,
+    workflow_scaffold: bool,
+) -> bool {
+    if natural_language_word_count >= 32 || workflow_scaffold {
         return false;
     }
 
-    let lowered = input.to_ascii_lowercase();
     let rewrite_hits = count_contains(&lowered, &["rewrite", "adapt the tone", "adapt tone"]);
     let translation_hits = count_contains(&lowered, &["translate"]);
     let extraction_hits = count_contains(&lowered, &["extract", "normalize"])
         + count_contains(&lowered, &[" fields", " field", "invoice number", "due date", "sender", "subject"]);
-    let search_hits = count_contains(&lowered, &["sources", "citations", "literature", "research gap", "themes"]);
-    let tutoring_artifact_hits = count_contains(&lowered, &["quiz", "answer key", "hint plan", "scaffolding"]);
+    let search_hits = count_contains(
+        &lowered,
+        &[
+            "sources",
+            "source names",
+            "source name",
+            "citations",
+            "literature",
+            "research gap",
+            "themes",
+            "evidence",
+            "new facts",
+        ],
+    );
+    let tutoring_artifact_hits = count_contains(
+        &lowered,
+        &[
+            "quiz",
+            "answer key",
+            "hint plan",
+            "scaffolding",
+            "example",
+            "age-appropriate",
+            "10-year-old",
+            "10 year old",
+            "misconception",
+            "lesson",
+        ],
+    );
     let contract_hits = count_contains(
         &lowered,
         &[
@@ -292,13 +352,34 @@ fn demands_contract_sensitive_passthrough(input: &str, natural_language_word_cou
         || (rewrite_hits >= 1 && contract_hits >= 2)
         || (extraction_hits >= 2 && contract_hits >= 1)
         || (search_hits >= 1 && contract_hits >= 2)
+        || (search_hits >= 2 && contract_hits >= 1)
         || (tutoring_artifact_hits >= 1 && contract_hits >= 2)
+        || (tutoring_artifact_hits >= 2 && contract_hits >= 1)
+}
+
+fn demands_separation_sensitive_passthrough(lowered: &str, workflow_scaffold: bool) -> bool {
+    if !workflow_scaffold {
+        return false;
+    }
+
+    let refund_handoff = lowered.contains("policy note")
+        && lowered.contains("appeal")
+        && lowered.contains("refund")
+        && lowered.contains("case note")
+        && lowered.contains("notify billing");
+    let portfolio_handoff = lowered.contains("risk note")
+        && lowered.contains("recommendation")
+        && lowered.contains("portfolio memo")
+        && lowered.contains("current allocation");
+
+    refund_handoff || portfolio_handoff
 }
 
 fn demands_row_heavy_passthrough(
     input: &str,
     lowered: &str,
     natural_language_word_count: usize,
+    workflow_scaffold: bool,
 ) -> bool {
     let tuple_rows = input
         .lines()
@@ -309,7 +390,7 @@ fn demands_row_heavy_passthrough(
         return false;
     }
 
-    if has_workflow_scaffold(input) {
+    if workflow_scaffold {
         return natural_language_word_count < 32 && lowered.contains("evidence:");
     }
 
@@ -416,8 +497,20 @@ mod tests {
         assert_eq!(result.compact, prompt);
         assert!(
             !result.program.blocks.is_empty(),
-            "fallback should still retain the attempted compiled program for internal use"
+            "token-savings fallback should still retain the attempted compiled program"
         );
+    }
+
+    #[test]
+    fn can_still_request_candidate_program_for_passthrough_prompt() {
+        let engine = Engine::new();
+        let prompt = "Explain AI in depth.";
+
+        let candidate = engine
+            .candidate_program(prompt)
+            .expect("candidate program should still compile");
+
+        assert!(!candidate.blocks.is_empty());
     }
 
     #[test]
@@ -443,6 +536,10 @@ def moving_average(xs, window):
 
         assert_eq!(result.mode, CompileMode::Passthrough);
         assert_eq!(result.compact, prompt);
+        assert!(
+            result.program.blocks.is_empty(),
+            "protected-content passthrough should skip building a compiled program"
+        );
     }
 
     #[test]

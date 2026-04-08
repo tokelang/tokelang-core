@@ -23,10 +23,48 @@ pub struct ClauseSpan {
     pub start: usize,
     pub end: usize,
     pub text: String,
+    pub cleaned_text: String,
     pub marker: Option<SequenceMarker>,
     pub indent: usize,
     pub is_list_item: bool,
     pub list_marker_kind: Option<ListMarkerKind>,
+}
+
+impl ClauseSpan {
+    pub fn new(
+        start: usize,
+        end: usize,
+        text: String,
+        marker: Option<SequenceMarker>,
+        indent: usize,
+        is_list_item: bool,
+        list_marker_kind: Option<ListMarkerKind>,
+    ) -> Self {
+        let cleaned_text = normalize::clean_input(&text);
+        Self {
+            start,
+            end,
+            text,
+            cleaned_text,
+            marker,
+            indent,
+            is_list_item,
+            list_marker_kind,
+        }
+    }
+
+    pub fn set_text(&mut self, text: String) {
+        self.text = text;
+        self.cleaned_text = normalize::clean_input(&self.text);
+    }
+
+    pub fn append_text(&mut self, suffix: &str) {
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            self.text.push('\n');
+        }
+        self.text.push_str(suffix);
+        self.cleaned_text = normalize::clean_input(&self.text);
+    }
 }
 
 pub fn split_clauses(input: &str, synonyms: &SynonymTable) -> Vec<ClauseSpan> {
@@ -355,15 +393,15 @@ fn push_trimmed_with_base(
         }
     }
 
-    output.push(ClauseSpan {
-        start: absolute_start,
-        end: absolute_end,
+    output.push(ClauseSpan::new(
+        absolute_start,
+        absolute_end,
         text,
-        marker: detected_marker,
-        indent: leading,
+        detected_marker,
+        leading,
         is_list_item,
         list_marker_kind,
-    });
+    ));
 }
 
 fn push_trimmed_with_inherited_metadata(

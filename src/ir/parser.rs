@@ -12,24 +12,15 @@ pub fn parse_program(input: &str) -> Result<TokelangProgram, ParseError> {
         return Err(ParseError::EmptyInput);
     }
 
-    let mut lines = trimmed
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .peekable();
-
-    let mut prefix_flags = ContextFlags::default();
-    if let Some(first_line) = lines.peek().copied()
-        && (first_line.starts_with('Φ') || first_line.starts_with('Ψ'))
-    {
-        parse_prefix_line(first_line, &mut prefix_flags);
-        lines.next();
-    }
-
     let mut blocks = Vec::new();
     let mut current_block = TokelangBlock::new(BlockType::Default);
+    let mut prefix_flags = ContextFlags::default();
 
-    for line in lines {
+    for line in trimmed.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if parse_prefix_line(line, &mut prefix_flags) {
+            continue;
+        }
+
         if let Some(block_type) = BlockType::from_marker(line) {
             if !current_block.items.is_empty() {
                 blocks.push(current_block);
@@ -38,7 +29,13 @@ pub fn parse_program(input: &str) -> Result<TokelangProgram, ParseError> {
             continue;
         }
 
-        let item = parse_item_line(line)?;
+        let mut item = parse_item_line(line)?;
+        if item.flags.role.is_none() {
+            item.flags.role = prefix_flags.role.clone();
+        }
+        if item.flags.audience.is_none() {
+            item.flags.audience = prefix_flags.audience.clone();
+        }
         current_block.items.push(item);
     }
 
@@ -46,57 +43,51 @@ pub fn parse_program(input: &str) -> Result<TokelangProgram, ParseError> {
         blocks.push(current_block);
     }
 
-    if let Some(first_block) = blocks.first_mut()
-        && let Some(first_item) = first_block.items.first_mut()
-    {
-        if first_item.flags.role.is_none() {
-            first_item.flags.role = prefix_flags.role;
-        }
-        if first_item.flags.audience.is_none() {
-            first_item.flags.audience = prefix_flags.audience;
-        }
-    }
-
     Ok(TokelangProgram { blocks })
 }
 
-fn parse_prefix_line(line: &str, flags: &mut ContextFlags) {
-    for part in line.split_whitespace() {
-        if let Some(role) = part.strip_prefix('Φ') {
-            flags.role = Some(role.to_string());
-        }
-        if let Some(audience) = part.strip_prefix('Ψ') {
-            flags.audience = Some(audience.to_string());
-        }
+fn parse_prefix_line(line: &str, flags: &mut ContextFlags) -> bool {
+    if let Some(value) = line.strip_prefix("role ") {
+        flags.role = Some(canonical_phrase(value));
+        return true;
     }
+
+    if let Some(value) = line.strip_prefix("audience ") {
+        flags.audience = Some(canonical_phrase(value));
+        return true;
+    }
+
+    false
 }
 
 fn parse_item_line(line: &str) -> Result<TokelangIR, ParseError> {
-    let mut remainder = line;
-    let mut sequence_id = None;
-
-    if let Some(index) = remainder.find('>') {
-        let prefix = &remainder[..index];
-        if prefix.chars().all(|ch| ch.is_ascii_digit()) {
-            sequence_id = Some(
-                prefix
-                    .parse::<usize>()
-                    .map_err(|_| ParseError::InvalidSequence(line.to_string()))?,
-            );
-            remainder = &remainder[index + 1..];
-        }
+    let tokens = line.split_whitespace().collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return Err(ParseError::InvalidLine(line.to_string()));
     }
 
-    let mut chars = remainder.chars();
-    let instruction_char = chars
-        .next()
-        .ok_or_else(|| ParseError::MissingInstruction(line.to_string()))?;
-    let instruction = Instruction::from_mnemonic(&instruction_char.to_string())
-        .ok_or_else(|| ParseError::UnknownInstruction(instruction_char.to_string()))?;
-    let payload = chars.as_str().trim();
+    let mut index = 0usize;
+    let mut sequence_id = None;
 
-    let (subject_payload, modifiers) = split_modifiers(payload);
-    let frame = parse_frame(subject_payload.trim());
+    if tokens[0].chars().all(|ch| ch.is_ascii_digit()) {
+        sequence_id = Some(
+            tokens[0]
+                .parse::<usize>()
+                .map_err(|_| ParseError::InvalidSequence(line.to_string()))?,
+        );
+        index += 1;
+    }
+
+    let instruction_token = tokens
+        .get(index)
+        .ok_or_else(|| ParseError::MissingInstruction(line.to_string()))?;
+    let instruction = Instruction::from_mnemonic(instruction_token)
+        .ok_or_else(|| ParseError::UnknownInstruction((*instruction_token).to_string()))?;
+    index += 1;
+
+    let mut tail = tokens[index..].to_vec();
+    let modifiers = split_modifiers(&mut tail);
+    let frame = parse_frame_tokens(&tail);
 
     Ok(TokelangIR {
         sequence_id,
@@ -109,69 +100,80 @@ fn parse_item_line(line: &str) -> Result<TokelangIR, ParseError> {
     })
 }
 
-fn split_modifiers(payload: &str) -> (&str, Vec<Modifier>) {
-    let chars = payload.char_indices().collect::<Vec<_>>();
+fn split_modifiers(tokens: &mut Vec<&str>) -> Vec<Modifier> {
     let mut modifiers = Vec::new();
-    let mut cut = payload.len();
-    let mut index = chars.len();
 
-    while index > 0 {
-        let (byte_index, character) = chars[index - 1];
-        let escaped = index >= 2 && chars[index - 2].1 == 'Ξ';
-        if escaped {
+    while let Some(last) = tokens.last().copied() {
+        let Some(modifier) = Modifier::from_mnemonic(last) else {
             break;
-        }
-        if let Some(modifier) = Modifier::from_mnemonic(&character.to_string()) {
-            modifiers.push(modifier);
-            cut = byte_index;
-            index -= 1;
-        } else {
-            break;
-        }
+        };
+        modifiers.push(modifier);
+        tokens.pop();
     }
 
     modifiers.reverse();
-    (&payload[..cut], modifiers)
+    modifiers
 }
 
-fn parse_frame(payload: &str) -> SemanticFrame {
+fn parse_frame_tokens(tokens: &[&str]) -> SemanticFrame {
     let mut frame = SemanticFrame::default();
+    let mut index = 0usize;
 
-    for chunk in payload.split(' ').filter(|chunk| !chunk.is_empty()) {
-        if chunk.contains('→') {
-            let parts = chunk
-                .split('→')
-                .filter(|part| !part.is_empty())
-                .map(|part| part.trim().to_string())
-                .collect::<Vec<_>>();
+    while index < tokens.len() {
+        let token = tokens[index];
 
-            for window in parts.windows(2) {
-                let from = window[0].clone();
-                let to = window[1].clone();
-                push_entity(&mut frame, &from);
-                push_entity(&mut frame, &to);
-                frame.relations.push(Relation {
-                    from,
-                    kind: RelationKind::LeadsTo,
-                    to,
-                });
-            }
-            continue;
-        }
-
-        if let Some(format) = OutputFormat::from_label(chunk) {
+        if token.eq_ignore_ascii_case("shape")
+            && let Some(label) = tokens.get(index + 1)
+            && let Some(format) = OutputFormat::from_label(label)
+        {
             let output_hint = frame.output_hint.get_or_insert(OutputHint {
                 format: None,
                 target: None,
             });
+            if output_hint.target.is_none()
+                && let Some(target) = frame.residual_terms.pop()
+            {
+                output_hint.target = Some(target);
+            }
             output_hint.format = Some(format);
+            index += 2;
             continue;
         }
 
-        push_entity(&mut frame, chunk);
+        if let Some(relation_kind) = relation_kind_for(token) {
+            if let (Some(from), Some(to)) = (
+                frame.residual_terms.last().cloned(),
+                tokens.get(index + 1).map(|value| value.to_string()),
+            ) {
+                push_entity(&mut frame, &from);
+                push_entity(&mut frame, &to);
+                frame.relations.push(Relation {
+                    from,
+                    kind: relation_kind,
+                    to: to.clone(),
+                });
+                frame.residual_terms.push(to);
+                index += 2;
+                continue;
+            }
+        }
+
+        frame.residual_terms.push(token.to_string());
+        index += 1;
     }
 
     frame
+}
+
+fn relation_kind_for(token: &str) -> Option<RelationKind> {
+    match token {
+        "leads" => Some(RelationKind::LeadsTo),
+        "causes" => Some(RelationKind::Causes),
+        "requires" => Some(RelationKind::Requires),
+        "enables" => Some(RelationKind::Enables),
+        "then" => Some(RelationKind::Sequence),
+        _ => None,
+    }
 }
 
 fn push_entity(frame: &mut SemanticFrame, canonical: &str) {
@@ -189,22 +191,39 @@ fn push_entity(frame: &mut SemanticFrame, canonical: &str) {
     });
 }
 
+fn canonical_phrase(value: &str) -> String {
+    value.split_whitespace()
+        .map(|part| {
+            part.chars()
+                .map(|character| {
+                    if character.is_ascii_alphabetic() {
+                        character.to_ascii_uppercase()
+                    } else {
+                        character
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("•")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn parses_process_item() {
-        let item = parse_item_line("1>¡QENTα").unwrap();
+        let item = parse_item_line("1 explain qent simple").unwrap();
         assert_eq!(item.sequence_id, Some(1));
         assert_eq!(item.instruction, Instruction::Explain);
         assert_eq!(item.modifiers, vec![Modifier::Simple]);
-        assert_eq!(item.frame.entities[0].canonical, "QENT");
+        assert_eq!(item.frame.residual_terms[0], "qent");
     }
 
     #[test]
     fn parses_program_roundtrip_shape() {
-        let compact = "ΦEXPERT•AI•RESEARCHER\n§\n1>¡QENTα";
+        let compact = "role expert ai researcher\nprocess\n1 explain qent simple";
         let program = parse_program(compact).unwrap();
         assert_eq!(program.blocks.len(), 1);
         assert_eq!(

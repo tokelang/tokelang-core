@@ -1,8 +1,8 @@
-//! Shared symbolic vocabulary for Tokelang.
+//! Shared compact vocabulary for Tokelang.
 //!
-//! This module is the single source of truth for instruction mnemonics,
-//! modifier mnemonics, output formats, subject abbreviations, synonym
-//! resolution, and reserved control symbols.
+//! This module is the single source of truth for instruction keywords,
+//! modifier keywords, output formats, subject abbreviations, and synonym
+//! resolution.
 
 mod error;
 mod instruction;
@@ -18,18 +18,8 @@ pub use output_format::OutputFormat;
 pub use subject::{SubjectMatch, SubjectTable};
 pub use synonym::SynonymTable;
 
-pub const BLOCK_MARKERS: [char; 3] = ['↹', '§', 'Σ'];
-pub const CONTROL_SYMBOLS: [char; 5] = ['Φ', 'Ψ', 'Ξ', '•', '→'];
-
-/// Returns true when the character has Tokelang control meaning and therefore
-/// must be escaped before user text is embedded in the IR.
-pub fn is_reserved_symbol(c: char) -> bool {
-    BLOCK_MARKERS.contains(&c)
-        || CONTROL_SYMBOLS.contains(&c)
-        || Instruction::all()
-            .iter()
-            .any(|instruction| instruction.mnemonic_char() == c)
-        || Modifier::all()
-            .iter()
-            .any(|modifier| modifier.mnemonic_char() == c)
+/// v0.8.0 uses a word-based surface format, so the compact output no longer
+/// reserves a special non-ASCII control alphabet inside user text.
+pub fn is_reserved_symbol(_c: char) -> bool {
+    false
 }
