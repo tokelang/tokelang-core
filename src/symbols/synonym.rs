@@ -26,6 +26,7 @@ impl SynonymTable {
             | "investigate" | "study" | "review" | "discuss" | "simulate" | "recompute"
             | "recalculate" | "detect" | "identify" | "correlate" | "classify" | "track"
             | "cross-reference" | "cross reference" | "extract" | "audit" | "check" | "verify"
+            | "confirm" | "record" | "label" | "reproduce"
             | "run" | "read" | "score" => Some(Instruction::Analyze),
             "show" => Some(Instruction::Explain),
             "generate" | "create" | "produce" | "write" | "compose" | "draft" | "build"

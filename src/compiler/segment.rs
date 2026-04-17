@@ -85,6 +85,10 @@ pub fn split_clauses(input: &str, synonyms: &SynonymTable) -> Vec<ClauseSpan> {
             continue;
         }
 
+        if character == '.' && is_inside_exact_token_period(input, index) {
+            continue;
+        }
+
         if matches!(character, '.' | '?' | '!' | '\n') {
             push_trimmed(input, start, index, None, &mut first_pass);
             start = index + character.len_utf8();
@@ -189,13 +193,11 @@ fn should_keep_controller_tail_joined(head: &str, tail: &str, synonyms: &Synonym
 
     let tail_cleaned = normalize::clean_input(tail);
     let words = normalize::tokenize_words(&tail_cleaned);
-    if words.is_empty() || words.len() > 4 || !synonyms.starts_with_instruction(&words) {
+    if words.is_empty() || !synonyms.starts_with_instruction(&words) {
         return false;
     }
 
-    !["keep ", "preserve ", "retain ", "ensure ", "return ", "output "]
-        .iter()
-        .any(|prefix| tail_cleaned.starts_with(prefix))
+    true
 }
 
 fn is_marker_only(text: &str) -> bool {
@@ -332,6 +334,34 @@ fn is_inside_literal_payload_line(input: &str, index: usize) -> bool {
         .unwrap_or(input.len());
     let trimmed = input[line_start..line_end].trim();
     should_preserve_literal_sentence(trimmed)
+}
+
+fn is_inside_exact_token_period(input: &str, index: usize) -> bool {
+    let line_start = input[..index]
+        .rfind(|character: char| character.is_whitespace())
+        .map(|offset| offset + 1)
+        .unwrap_or(0);
+    let line_end = input[index..]
+        .find(|character: char| character.is_whitespace())
+        .map(|offset| index + offset)
+        .unwrap_or(input.len());
+    let token = input[line_start..line_end]
+        .trim_matches(|ch: char| matches!(ch, ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\''));
+
+    token.contains("://")
+        || (token.contains('/') && token.contains('.'))
+        || looks_like_domain_token(token)
+}
+
+fn looks_like_domain_token(token: &str) -> bool {
+    let parts = token.split('.').collect::<Vec<_>>();
+    parts.len() >= 2
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
 }
 
 fn push_trimmed(
@@ -592,5 +622,18 @@ mod tests {
         );
         assert_eq!(clauses.len(), 1);
         assert_eq!(clauses[0].text, "panic: unexpected null pointer at row 44");
+    }
+
+    #[test]
+    fn does_not_split_url_on_internal_periods() {
+        let clauses = split_clauses(
+            "Verify the onboarding link https://tokelang.com/docs before the rollout.",
+            &SynonymTable::default_table(),
+        );
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(
+            clauses[0].text,
+            "Verify the onboarding link https://tokelang.com/docs before the rollout"
+        );
     }
 }

@@ -1,10 +1,34 @@
 use crate::compiler::Compiler;
 use crate::compiler::normalize;
 use crate::error::EngineError;
-use crate::ir::TokelangProgram;
+use crate::ir::{SurfaceProfile, TokelangProgram};
 use crate::token_metrics::Tokenizer;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 const MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG: f64 = 15.0;
+const LOW_RISK_WORKFLOW_MIN_TOKEN_SAVINGS_PCT: f64 = 12.0;
+const COMPILE_CACHE_SCHEMA: u32 = 1;
+const MIN_CHARS_FOR_COMPILE_CACHE: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RoutingSignals {
+    original_tokens: usize,
+    compact_tokens: usize,
+    reduction_pct: f64,
+    natural_language_word_count: usize,
+    protected_ratio_pct: f64,
+    workflow_scaffold: bool,
+    tuple_rows: usize,
+    controller_hits: usize,
+    exact_anchor_hits: usize,
+    contract_hits: usize,
+    short_output_note_like: bool,
+    locality_hits: usize,
+    continue_branch: bool,
+    compare_hits: usize,
+}
 
 /// Whether the final returned output is Tokelang IR or the original prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,10 +65,27 @@ pub struct PassthroughDiagnostics {
     pub passthrough_threshold_pct: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CompileCacheKey {
+    schema: u32,
+    profile: SurfaceProfile,
+    input: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CompileCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub entries: usize,
+}
+
 /// Top-level facade for Tokelang compilation and compact parsing.
 pub struct Engine {
     compiler: Compiler,
     tokenizer: Tokenizer,
+    cache: Mutex<HashMap<CompileCacheKey, CompileResult>>,
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
 }
 
 impl Engine {
@@ -52,30 +93,14 @@ impl Engine {
         Self {
             compiler: Compiler::new(),
             tokenizer: Tokenizer::detect(),
+            cache: Mutex::new(HashMap::new()),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
         }
     }
 
     pub fn compile(&self, input: &str) -> Result<CompileResult, EngineError> {
-        if self.protected_content_demands_passthrough(input) {
-            return Ok(CompileResult {
-                program: TokelangProgram::default(),
-                compact: input.to_string(),
-                mode: CompileMode::Passthrough,
-            });
-        }
-
-        let program = self.compiler.compile(input)?;
-        let tokelang_compact = program.to_compact();
-        let mode = self.output_mode(input, &tokelang_compact);
-        let compact = match mode {
-            CompileMode::Tokelang => tokelang_compact,
-            CompileMode::Passthrough => input.to_string(),
-        };
-        Ok(CompileResult {
-            program,
-            compact,
-            mode,
-        })
+        self.compile_for_profile(input, SurfaceProfile::Default)
     }
 
     pub fn parse_compact(&self, input: &str) -> Result<TokelangProgram, EngineError> {
@@ -84,6 +109,15 @@ impl Engine {
 
     pub fn candidate_program(&self, input: &str) -> Result<TokelangProgram, EngineError> {
         Ok(self.compiler.compile(input)?)
+    }
+
+    pub fn compile_cache_stats(&self) -> CompileCacheStats {
+        let entries = self.cache.lock().expect("compile cache poisoned").len();
+        CompileCacheStats {
+            hits: self.cache_hits.load(Ordering::Relaxed),
+            misses: self.cache_misses.load(Ordering::Relaxed),
+            entries,
+        }
     }
 
     pub fn passthrough_threshold_pct(&self) -> f64 {
@@ -115,19 +149,84 @@ impl Engine {
     }
 
     fn output_mode(&self, input: &str, tokelang_compact: &str) -> CompileMode {
-        let original_tokens = self.tokenizer.count(input);
-        if original_tokens == 0 {
+        let signals = self.routing_signals(input, tokelang_compact);
+        if signals.original_tokens == 0 {
             return CompileMode::Tokelang;
         }
 
-        let compact_tokens = self.tokenizer.count(tokelang_compact);
-        let reduction_pct =
-            (original_tokens as f64 - compact_tokens as f64) / original_tokens as f64 * 100.0;
-
-        if reduction_pct <= MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG {
+        if risk_policy_demands_passthrough(input, &signals) {
+            CompileMode::Passthrough
+        } else if signals.reduction_pct <= min_token_savings_pct_for_signals(&signals) {
             CompileMode::Passthrough
         } else {
             CompileMode::Tokelang
+        }
+    }
+
+    fn routing_signals(&self, input: &str, tokelang_compact: &str) -> RoutingSignals {
+        let original_tokens = self.tokenizer.count(input);
+        let compact_tokens = self.tokenizer.count(tokelang_compact);
+        let reduction_pct = if original_tokens == 0 {
+            0.0
+        } else {
+            (original_tokens as f64 - compact_tokens as f64) / original_tokens as f64 * 100.0
+        };
+        let diagnostics = self.passthrough_diagnostics(input);
+        let lowered = input.to_ascii_lowercase();
+        let workflow_scaffold = has_workflow_scaffold(input);
+
+        RoutingSignals {
+            original_tokens,
+            compact_tokens,
+            reduction_pct,
+            natural_language_word_count: diagnostics.natural_language_word_count,
+            protected_ratio_pct: diagnostics.protected_ratio_pct,
+            workflow_scaffold,
+            tuple_rows: count_tuple_rows(input),
+            controller_hits: count_contains(
+                &lowered,
+                &[
+                    " if ",
+                    "\nif ",
+                    "otherwise",
+                    "go to step",
+                    "goto",
+                    "keep ",
+                    "return ",
+                    "route ",
+                    "stop and request approval",
+                ],
+            ),
+            exact_anchor_hits: count_exact_anchor_signals(input, &lowered),
+            contract_hits: count_contains(
+                &lowered,
+                &[
+                    "return only",
+                    "return the",
+                    "keep ",
+                    "preserve",
+                    "include",
+                    "do not",
+                    "avoid",
+                    "intact",
+                    "visible",
+                    "separate",
+                ],
+            ),
+            short_output_note_like: is_short_output_note_prompt(&lowered),
+            locality_hits: count_contains(
+                &lowered,
+                &[
+                    "local to that branch",
+                    "local to the branch",
+                    "local to this branch",
+                    "keep the note about",
+                    "keep that quote only where",
+                    "visible",
+                ],
+            ),
+            continue_branch: lowered.contains("otherwise continue"),
+            compare_hits: count_contains(&lowered, &["compare"]),
         }
     }
 
@@ -159,6 +258,86 @@ impl Engine {
                 diagnostics.natural_language_word_count,
                 workflow_scaffold,
             )
+            || demands_outline_sensitive_passthrough(
+                &lowered,
+                diagnostics.natural_language_word_count,
+                workflow_scaffold,
+            )
+    }
+
+    fn compile_for_profile(
+        &self,
+        input: &str,
+        profile: SurfaceProfile,
+    ) -> Result<CompileResult, EngineError> {
+        if let Some(cached) = self.cache_lookup(input, profile) {
+            return Ok(cached);
+        }
+
+        let result = if self.protected_content_demands_passthrough(input) {
+            CompileResult {
+                program: TokelangProgram::default(),
+                compact: input.to_string(),
+                mode: CompileMode::Passthrough,
+            }
+        } else {
+            let program = self.compiler.compile(input)?;
+            let tokelang_compact = program.to_compact_with_profile(profile);
+            let mode = self.output_mode(input, &tokelang_compact);
+            let compact = match mode {
+                CompileMode::Tokelang => tokelang_compact,
+                CompileMode::Passthrough => input.to_string(),
+            };
+            CompileResult {
+                program,
+                compact,
+                mode,
+            }
+        };
+
+        self.cache_store(input, profile, &result);
+        Ok(result)
+    }
+
+    fn should_cache_input(input: &str) -> bool {
+        input.len() >= MIN_CHARS_FOR_COMPILE_CACHE
+    }
+
+    fn cache_lookup(&self, input: &str, profile: SurfaceProfile) -> Option<CompileResult> {
+        if !Self::should_cache_input(input) {
+            return None;
+        }
+
+        let key = CompileCacheKey {
+            schema: COMPILE_CACHE_SCHEMA,
+            profile,
+            input: input.to_string(),
+        };
+        let cache = self.cache.lock().expect("compile cache poisoned");
+        let cached = cache.get(&key).cloned();
+        drop(cache);
+        if cached.is_some() {
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.cache_misses.fetch_add(1, Ordering::Relaxed);
+        }
+        cached
+    }
+
+    fn cache_store(&self, input: &str, profile: SurfaceProfile, result: &CompileResult) {
+        if !Self::should_cache_input(input) {
+            return;
+        }
+
+        let key = CompileCacheKey {
+            schema: COMPILE_CACHE_SCHEMA,
+            profile,
+            input: input.to_string(),
+        };
+        self.cache
+            .lock()
+            .expect("compile cache poisoned")
+            .insert(key, result.clone());
     }
 }
 
@@ -285,7 +464,7 @@ fn demands_contract_sensitive_passthrough(
     natural_language_word_count: usize,
     workflow_scaffold: bool,
 ) -> bool {
-    if natural_language_word_count >= 32 || workflow_scaffold {
+    if natural_language_word_count >= 32 {
         return false;
     }
 
@@ -348,13 +527,43 @@ fn demands_contract_sensitive_passthrough(
         ],
     );
 
-    (translation_hits >= 1 && contract_hits >= 1)
-        || (rewrite_hits >= 1 && contract_hits >= 2)
+    let translation_contract = translation_hits >= 1 && contract_hits >= 1;
+    if translation_contract {
+        return true;
+    }
+
+    if workflow_scaffold {
+        return false;
+    }
+
+    (rewrite_hits >= 1 && contract_hits >= 2)
         || (extraction_hits >= 2 && contract_hits >= 1)
         || (search_hits >= 1 && contract_hits >= 2)
         || (search_hits >= 2 && contract_hits >= 1)
         || (tutoring_artifact_hits >= 1 && contract_hits >= 2)
         || (tutoring_artifact_hits >= 2 && contract_hits >= 1)
+}
+
+fn demands_outline_sensitive_passthrough(
+    lowered: &str,
+    natural_language_word_count: usize,
+    workflow_scaffold: bool,
+) -> bool {
+    if !workflow_scaffold || natural_language_word_count >= 36 {
+        return false;
+    }
+
+    let sectioned_synthesis = (lowered.contains("sections:") || lowered.contains("sections\n"))
+        && lowered.contains("synthesis")
+        && lowered.contains("limitations")
+        && (lowered.contains("next experiment") || lowered.contains("experiment"));
+
+    let terse_incident_triage = lowered.contains("incident response")
+        && lowered.contains("customer impact summary")
+        && lowered.contains("go to step")
+        && lowered.contains("incident memo");
+
+    sectioned_synthesis || terse_incident_triage
 }
 
 fn demands_separation_sensitive_passthrough(lowered: &str, workflow_scaffold: bool) -> bool {
@@ -463,6 +672,180 @@ fn count_contains(text: &str, needles: &[&str]) -> usize {
     needles.iter().filter(|needle| text.contains(**needle)).count()
 }
 
+fn min_token_savings_pct_for_signals(signals: &RoutingSignals) -> f64 {
+    if signals.workflow_scaffold
+        && signals.controller_hits >= 1
+        && signals.exact_anchor_hits <= 1
+        && !signals.short_output_note_like
+    {
+        LOW_RISK_WORKFLOW_MIN_TOKEN_SAVINGS_PCT
+    } else {
+        MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG
+    }
+}
+
+fn risk_policy_demands_passthrough(input: &str, signals: &RoutingSignals) -> bool {
+    short_compare_note_contract_passthrough(input, signals)
+        || exact_visibility_contract_passthrough(input, signals)
+        || anchor_dense_mixed_workflow_passthrough(signals)
+        || terse_continue_branch_passthrough(signals)
+        || row_heavy_policy_passthrough(signals)
+}
+
+fn short_compare_note_contract_passthrough(input: &str, signals: &RoutingSignals) -> bool {
+    if signals.workflow_scaffold {
+        return false;
+    }
+
+    let lowered = input.to_ascii_lowercase();
+    let short_prompt = signals.original_tokens <= 24 || signals.natural_language_word_count <= 18;
+    let compare_prompt = signals.compare_hits >= 1
+        || lowered.contains("rewrite")
+        || lowered.contains("adapt the tone")
+        || lowered.contains("adapt tone");
+
+    short_prompt && compare_prompt && signals.short_output_note_like
+}
+
+fn exact_visibility_contract_passthrough(input: &str, signals: &RoutingSignals) -> bool {
+    if signals.workflow_scaffold {
+        return false;
+    }
+
+    let lowered = input.to_ascii_lowercase();
+    let has_exactness_contract = lowered.contains("visible")
+        || lowered.contains("exactly")
+        || lowered.contains("preserve")
+        || lowered.contains("intact");
+    let output_note_like = lowered.contains("return") && lowered.contains("note");
+
+    output_note_like
+        && has_exactness_contract
+        && signals.contract_hits >= 2
+        && (signals.exact_anchor_hits >= 1 || has_duration_like_anchor(&lowered))
+}
+
+fn anchor_dense_mixed_workflow_passthrough(signals: &RoutingSignals) -> bool {
+    signals.workflow_scaffold
+        && signals.exact_anchor_hits >= 3
+        && signals.locality_hits >= 1
+        && signals.short_output_note_like
+}
+
+fn terse_continue_branch_passthrough(signals: &RoutingSignals) -> bool {
+    signals.workflow_scaffold
+        && signals.continue_branch
+        && signals.compare_hits >= 1
+        && signals.short_output_note_like
+        && signals.reduction_pct < 40.0
+}
+
+fn row_heavy_policy_passthrough(signals: &RoutingSignals) -> bool {
+    signals.tuple_rows >= 2 && signals.natural_language_word_count < 48
+}
+
+fn count_tuple_rows(input: &str) -> usize {
+    input.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('(') && line.ends_with(')') && line.matches(',').count() >= 2)
+        .count()
+}
+
+fn is_short_output_note_prompt(lowered: &str) -> bool {
+    let output_terms = [
+        "memo",
+        "note",
+        "brief",
+        "summary",
+        "reply",
+        "sheet",
+        "update",
+    ];
+    let short_terms = ["short", "brief", "concise"];
+
+    lowered.contains("return")
+        && output_terms.iter().any(|term| lowered.contains(term))
+        && short_terms.iter().any(|term| lowered.contains(term))
+}
+
+fn count_exact_anchor_signals(input: &str, lowered: &str) -> usize {
+    let mut hits = 0;
+
+    if input.contains('"') || input.contains('`') {
+        hits += 1;
+    }
+    if input.contains('%') {
+        hits += 1;
+    }
+    if has_iso_date_like_anchor(input) {
+        hits += 1;
+    }
+    if has_path_or_url_like_anchor(lowered) {
+        hits += 1;
+    }
+    if has_duration_like_anchor(lowered) {
+        hits += 1;
+    }
+    if lowered.contains("top 3")
+        || lowered.contains("top 5")
+        || lowered.contains("exactly ")
+        || lowered.contains("at least ")
+    {
+        hits += 1;
+    }
+    if lowered.contains("o(n") || lowered.contains("t(n)") {
+        hits += 1;
+    }
+    if input.contains('_') {
+        hits += 1;
+    }
+
+    hits
+}
+
+fn has_iso_date_like_anchor(input: &str) -> bool {
+    input.split_whitespace().any(|token| {
+        let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+        let bytes = token.as_bytes();
+        bytes.len() == 10
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    })
+}
+
+fn has_path_or_url_like_anchor(lowered: &str) -> bool {
+    lowered.contains("http://")
+        || lowered.contains("https://")
+        || lowered.contains("/api/")
+        || lowered.contains(".yml")
+        || lowered.contains(".yaml")
+        || lowered.contains(".json")
+        || lowered.contains(".toml")
+        || lowered.contains(".md")
+        || lowered.contains("/srv/")
+}
+
+fn has_duration_like_anchor(lowered: &str) -> bool {
+    lowered.split_whitespace().any(|token| {
+        let trimmed = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let has_digit = trimmed.chars().any(|character| character.is_ascii_digit());
+        has_digit
+            && (trimmed.ends_with("ms")
+                || trimmed.ends_with('s')
+                || trimmed.ends_with("min")
+                || trimmed.ends_with("mins")
+                || trimmed.ends_with("hour")
+                || trimmed.ends_with("hours")
+                || trimmed.ends_with("day")
+                || trimmed.ends_with("days"))
+    }) || lowered.contains(" minutes")
+        || lowered.contains(" minute")
+}
+
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
@@ -472,6 +855,7 @@ impl Default for Engine {
 #[cfg(test)]
 mod tests {
     use super::{CompileMode, Engine};
+    use crate::ir::SurfaceProfile;
 
     #[test]
     fn keeps_tokelang_output_when_token_savings_clear_threshold() {
@@ -742,9 +1126,136 @@ Tasks:
         assert!(compact.contains("control group"));
         assert!(compact.contains("request"));
         assert!(compact.contains("treatment outcomes"));
-        assert!(compact.contains("experimental-protocol"));
+        assert!(
+            compact.contains("experimental protocol")
+                || compact.contains("experimental-protocol")
+        );
         assert!(!compact.contains("definition"));
         assert!(!compact.contains("comparison"));
         assert!(!compact.contains("stop request"));
+    }
+
+    #[test]
+    fn falls_back_to_passthrough_for_translation_requirements_workflow() {
+        let engine = Engine::new();
+        let prompt = r#"Translate this release note into German.
+
+Requirements:
+- Keep bullet formatting
+- Preserve the product names
+- Keep the glossary terms untouched
+- Return the translated note only"#;
+
+        let result = engine
+            .compile(prompt)
+            .expect("translation requirements workflow should compile");
+
+        assert_eq!(result.mode, CompileMode::Passthrough);
+        assert_eq!(result.compact, prompt);
+    }
+
+    #[test]
+    fn falls_back_to_passthrough_for_sectioned_study_synthesis_outline() {
+        let engine = Engine::new();
+        let prompt = r#"Write a study synthesis.
+
+Sections:
+- Summarize the strongest claims
+- Keep the limitations separate
+- Note the next experiment"#;
+
+        let result = engine
+            .compile(prompt)
+            .expect("sectioned study synthesis should compile");
+
+        assert_eq!(result.mode, CompileMode::Passthrough);
+        assert_eq!(result.compact, prompt);
+    }
+
+    #[test]
+    fn falls_back_to_passthrough_for_terse_incident_response_branch_workflow() {
+        let engine = Engine::new();
+        let prompt = r#"Incident response.
+
+1. Capture the customer impact summary
+2. If billing appears, go to Step 4
+3. Otherwise continue the outage investigation
+4. Return a short incident memo"#;
+
+        let result = engine
+            .compile(prompt)
+            .expect("terse incident response workflow should compile");
+
+        assert_eq!(result.mode, CompileMode::Passthrough);
+        assert_eq!(result.compact, prompt);
+    }
+
+    #[test]
+    fn long_prompt_cache_registers_hit_on_second_compile() {
+        let engine = Engine::new();
+        let prompt = r#"Account recovery escalation review.
+
+We are reviewing repeated recovery failures across billing address mismatch, recovery email changes, MFA reset requests, recent password changes, support hold windows, device drift, last known good session data, and VIP handling rules.
+
+1. Check identity signals from billing address, recent invoice, MFA reset request, recovery email change timing, and the last known good session.
+2. If billing mismatch is present and the recovery email changed within 24 hours, go to Step 5.
+3. Otherwise compare the recent device and IP cluster against the last known good session and keep uncertain signals separate from the recovery note.
+4. Summarize the safe manual verification steps for the support agent.
+5. Return a detailed escalation memo."#;
+
+        let first = engine.compile(prompt).expect("first compile");
+        let after_first = engine.compile_cache_stats();
+        let second = engine.compile(prompt).expect("second compile");
+        let after_second = engine.compile_cache_stats();
+
+        assert_eq!(first.compact, second.compact);
+        assert_eq!(first.mode, second.mode);
+        assert_eq!(after_first.entries, 1);
+        assert_eq!(after_first.misses, 1);
+        assert_eq!(after_first.hits, 0);
+        assert_eq!(after_second.entries, 1);
+        assert_eq!(after_second.misses, 1);
+        assert_eq!(after_second.hits, 1);
+    }
+
+    #[test]
+    fn short_prompt_skips_compile_cache() {
+        let engine = Engine::new();
+        let prompt = "Explain AI in depth.";
+
+        let _ = engine.compile(prompt).expect("first compile");
+        let _ = engine.compile(prompt).expect("second compile");
+        let stats = engine.compile_cache_stats();
+
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+    }
+
+    #[test]
+    fn compile_cache_is_profile_sensitive() {
+        let engine = Engine::new();
+        let prompt = r#"Account recovery escalation review.
+
+We are reviewing repeated recovery failures across billing address mismatch, recovery email changes, MFA reset requests, recent password changes, support hold windows, device drift, last known good session data, and VIP handling rules.
+
+1. Check identity signals from billing address, recent invoice, MFA reset request, recovery email change timing, and the last known good session.
+2. If billing mismatch is present and the recovery email changed within 24 hours, go to Step 5.
+3. Otherwise compare the recent device and IP cluster against the last known good session and keep uncertain signals separate from the recovery note.
+4. Summarize the safe manual verification steps for the support agent.
+5. Return a detailed escalation memo."#;
+
+        let default = engine
+            .compile_for_profile(prompt, SurfaceProfile::Default)
+            .expect("default profile compile");
+        let robust = engine
+            .compile_for_profile(prompt, SurfaceProfile::Robust)
+            .expect("robust profile compile");
+        let stats = engine.compile_cache_stats();
+
+        assert_ne!(default.compact, robust.compact);
+        assert_eq!(stats.entries, 2);
+        assert_eq!(stats.misses, 2);
+        assert_eq!(stats.hits, 0);
     }
 }

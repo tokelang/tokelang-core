@@ -1,3 +1,4 @@
+use crate::ir::SurfaceProfile;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -35,20 +36,27 @@ impl Instruction {
         }
     }
 
+    pub fn mnemonic_for_profile(&self, profile: SurfaceProfile) -> &'static str {
+        match profile {
+            SurfaceProfile::Default => self.mnemonic(),
+            SurfaceProfile::Robust => self.mnemonic(),
+        }
+    }
+
     /// Inverse of [`mnemonic`](Self::mnemonic).
     pub fn from_mnemonic(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "explain" => Some(Self::Explain),
-            "summarize" => Some(Self::Summarize),
-            "analyze" => Some(Self::Analyze),
+            "summarize" | "digest" => Some(Self::Summarize),
+            "analyze" | "review" => Some(Self::Analyze),
             "generate" => Some(Self::Generate),
             "translate" => Some(Self::Translate),
             "compare" => Some(Self::Compare),
-            "search" => Some(Self::Search),
-            "transform" => Some(Self::Transform),
+            "search" | "find" => Some(Self::Search),
+            "transform" | "change" => Some(Self::Transform),
             "list" => Some(Self::List),
             "define" => Some(Self::Define),
-            "conclude" => Some(Self::Conclude),
+            "conclude" | "finish" => Some(Self::Conclude),
             _ => None,
         }
     }
@@ -105,5 +113,14 @@ mod tests {
                 Some(*instruction)
             );
         }
+    }
+
+    #[test]
+    fn robust_alias_roundtrip() {
+        assert_eq!(Instruction::from_mnemonic("review"), Some(Instruction::Analyze));
+        assert_eq!(Instruction::from_mnemonic("find"), Some(Instruction::Search));
+        assert_eq!(Instruction::from_mnemonic("digest"), Some(Instruction::Summarize));
+        assert_eq!(Instruction::from_mnemonic("change"), Some(Instruction::Transform));
+        assert_eq!(Instruction::from_mnemonic("finish"), Some(Instruction::Conclude));
     }
 }

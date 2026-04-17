@@ -7,5 +7,5 @@ mod types;
 pub use error::ParseError;
 pub use types::{
     BlockType, ContextFlags, Entity, OutputHint, Relation, RelationKind, SemanticFrame, SourceSpan,
-    TokelangBlock, TokelangIR, TokelangProgram,
+    SurfaceProfile, TokelangBlock, TokelangIR, TokelangProgram,
 };
