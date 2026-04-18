@@ -1,6 +1,6 @@
 # tokelang-core
 
-`tokelang-core` is the compiler library for the `v0.8.0` Tokelang Lite line.
+`tokelang-core` is the compiler library for the current `v0.9.0` Tokelang Lite line.
 
 It owns:
 
@@ -34,4 +34,4 @@ match compiled.mode {
 
 - `TokelangProgram` keeps the typed internal structure; only the public surface syntax changed.
 - Compact parsing is part of the crate and must stay in sync with emission.
-- `v0.8.0` removes symbol-driven escaping from the public format and favors a smaller word inventory instead.
+- `v0.9.0` keeps the word-based public format and adds stronger structure handling, literal protection, routing policy, and caching on top of it.

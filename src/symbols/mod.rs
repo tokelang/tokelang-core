@@ -18,7 +18,7 @@ pub use output_format::OutputFormat;
 pub use subject::{SubjectMatch, SubjectTable};
 pub use synonym::SynonymTable;
 
-/// v0.8.0 uses a word-based surface format, so the compact output no longer
+/// v0.9.0 uses a word-based surface format, so the compact output no longer
 /// reserves a special non-ASCII control alphabet inside user text.
 pub fn is_reserved_symbol(_c: char) -> bool {
     false
