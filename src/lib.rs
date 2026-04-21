@@ -1,6 +1,7 @@
 pub mod compiler;
 pub mod engine;
 pub mod error;
+mod general_text;
 pub mod ir;
 mod options;
 pub mod symbols;

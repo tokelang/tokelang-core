@@ -1,8 +1,14 @@
+use crate::compiler::CompileError;
 use crate::compiler::Compiler;
 use crate::compiler::normalize;
 use crate::error::EngineError;
-use crate::ir::{SurfaceProfile, TokelangProgram};
+use crate::general_text;
+use crate::ir::{
+    BlockType, SemanticFrame, SourceSpan, SurfaceProfile, TokelangBlock, TokelangIR,
+    TokelangProgram,
+};
 use crate::options::{CompileOptions, ProtectedRange, normalize_protected_ranges};
+use crate::symbols::Instruction;
 use crate::token_metrics::Tokenizer;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -180,26 +186,6 @@ impl Engine {
         }
     }
 
-    fn output_mode_with_options(
-        &self,
-        input: &str,
-        tokelang_compact: &str,
-        options: &CompileOptions,
-    ) -> CompileMode {
-        let signals = self.routing_signals(input, tokelang_compact, options);
-        if signals.original_tokens == 0 {
-            return CompileMode::Tokelang;
-        }
-
-        if risk_policy_demands_passthrough(input, &signals) {
-            CompileMode::Passthrough
-        } else if signals.reduction_pct <= min_token_savings_pct_for_signals(&signals) {
-            CompileMode::Passthrough
-        } else {
-            CompileMode::Tokelang
-        }
-    }
-
     fn routing_signals(
         &self,
         input: &str,
@@ -328,27 +314,79 @@ impl Engine {
                 mode: CompileMode::Passthrough,
             }
         } else {
-            let program = self
+            match self
                 .compiler
-                .compile_with_options(input, &normalized_options)?;
-            let tokelang_compact = program.to_compact_with_profile(profile);
-            let mode = if protected_spans_preserved_exactly(
-                input,
-                &tokelang_compact,
-                &normalized_options.protected_ranges,
-            ) {
-                self.output_mode_with_options(input, &tokelang_compact, &normalized_options)
-            } else {
-                CompileMode::Passthrough
-            };
-            let compact = match mode {
-                CompileMode::Tokelang => tokelang_compact,
-                CompileMode::Passthrough => input.to_string(),
-            };
-            CompileResult {
-                program,
-                compact,
-                mode,
+                .compile_with_options(input, &normalized_options)
+            {
+                Ok(program) => {
+                    let tokelang_compact = program.to_compact_with_profile(profile);
+                    let protected_spans_preserved = protected_spans_preserved_exactly(
+                        input,
+                        &tokelang_compact,
+                        &normalized_options.protected_ranges,
+                    );
+                    let signals =
+                        self.routing_signals(input, &tokelang_compact, &normalized_options);
+                    let risk_passthrough = !protected_spans_preserved
+                        || risk_policy_demands_passthrough(input, &signals);
+                    let mode = if risk_passthrough {
+                        CompileMode::Passthrough
+                    } else if signals.reduction_pct <= min_token_savings_pct_for_signals(&signals) {
+                        CompileMode::Passthrough
+                    } else {
+                        CompileMode::Tokelang
+                    };
+                    let general_candidate = general_text::candidate(input, &self.tokenizer);
+                    let structured_workflow = has_workflow_scaffold(input);
+                    let leading_sequence_scaffold = has_leading_sequence_scaffold(input);
+                    let system_role_or_audience = has_system_role_or_audience_frame(input);
+                    let use_general = general_candidate.as_ref().is_some_and(|candidate| {
+                        !risk_passthrough
+                            && !structured_workflow
+                            && !leading_sequence_scaffold
+                            && !system_role_or_audience
+                            && general_text::should_prefer_general(
+                                input,
+                                &tokelang_compact,
+                                candidate,
+                            )
+                    });
+
+                    if use_general {
+                        let candidate = general_candidate.expect("candidate checked above");
+                        CompileResult {
+                            program: general_text_program(input, &candidate.compact),
+                            compact: candidate.compact,
+                            mode: CompileMode::Tokelang,
+                        }
+                    } else {
+                        let compact = match mode {
+                            CompileMode::Tokelang => tokelang_compact,
+                            CompileMode::Passthrough => input.to_string(),
+                        };
+                        CompileResult {
+                            program,
+                            compact,
+                            mode,
+                        }
+                    }
+                }
+                Err(CompileError::NoInstruction | CompileError::NoSemanticContent) => {
+                    if let Some(candidate) = general_text::candidate(input, &self.tokenizer) {
+                        CompileResult {
+                            program: general_text_program(input, &candidate.compact),
+                            compact: candidate.compact,
+                            mode: CompileMode::Tokelang,
+                        }
+                    } else {
+                        CompileResult {
+                            program: TokelangProgram::default(),
+                            compact: input.to_string(),
+                            mode: CompileMode::Passthrough,
+                        }
+                    }
+                }
+                Err(error) => return Err(error.into()),
             }
         };
 
@@ -432,6 +470,24 @@ fn protected_spans_preserved_exactly(
     required_counts
         .into_iter()
         .all(|(slice, needed)| compact.match_indices(slice).count() >= needed)
+}
+
+fn general_text_program(input: &str, compact: &str) -> TokelangProgram {
+    let item = TokelangIR {
+        sequence_id: None,
+        instruction: Instruction::Generate,
+        frame: SemanticFrame::default(),
+        modifiers: Vec::new(),
+        flags: Default::default(),
+        source_span: Some(SourceSpan {
+            start: 0,
+            end: input.len(),
+        }),
+        recovered_from_coverage: false,
+        compact_override: Some(compact.to_string()),
+    };
+
+    TokelangProgram::new().with_block(TokelangBlock::new(BlockType::Default).add_item(item))
 }
 
 fn demands_fenced_code_passthrough(
@@ -764,6 +820,23 @@ fn has_workflow_scaffold(input: &str) -> bool {
         .take(2)
         .count()
         >= 2
+}
+
+fn has_leading_sequence_scaffold(input: &str) -> bool {
+    let lowered = input.trim_start().to_ascii_lowercase();
+    lowered.starts_with("first,")
+        || lowered.starts_with("first ")
+        || lowered.starts_with("step one")
+        || lowered.starts_with("step 1")
+}
+
+fn has_system_role_or_audience_frame(input: &str) -> bool {
+    let lowered = input.trim_start().to_ascii_lowercase();
+    lowered.starts_with("you are ")
+        || lowered.starts_with("you are an ")
+        || lowered.starts_with("you are a ")
+        || lowered.contains("audience that consists")
+        || lowered.contains("audience consists")
 }
 
 fn looks_like_list_line(line: &str) -> bool {
