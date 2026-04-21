@@ -2,10 +2,11 @@ use crate::compiler::Compiler;
 use crate::compiler::normalize;
 use crate::error::EngineError;
 use crate::ir::{SurfaceProfile, TokelangProgram};
+use crate::options::{CompileOptions, ProtectedRange, normalize_protected_ranges};
 use crate::token_metrics::Tokenizer;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG: f64 = 15.0;
 const LOW_RISK_WORKFLOW_MIN_TOKEN_SAVINGS_PCT: f64 = 12.0;
@@ -70,6 +71,7 @@ struct CompileCacheKey {
     schema: u32,
     profile: SurfaceProfile,
     input: String,
+    protected_ranges: Vec<crate::options::ProtectedRange>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -100,7 +102,15 @@ impl Engine {
     }
 
     pub fn compile(&self, input: &str) -> Result<CompileResult, EngineError> {
-        self.compile_for_profile(input, SurfaceProfile::Default)
+        self.compile_with_options(input, &CompileOptions::default())
+    }
+
+    pub fn compile_with_options(
+        &self,
+        input: &str,
+        options: &CompileOptions,
+    ) -> Result<CompileResult, EngineError> {
+        self.compile_for_profile_with_options(input, SurfaceProfile::Default, options)
     }
 
     pub fn parse_compact(&self, input: &str) -> Result<TokelangProgram, EngineError> {
@@ -108,7 +118,15 @@ impl Engine {
     }
 
     pub fn candidate_program(&self, input: &str) -> Result<TokelangProgram, EngineError> {
-        Ok(self.compiler.compile(input)?)
+        self.candidate_program_with_options(input, &CompileOptions::default())
+    }
+
+    pub fn candidate_program_with_options(
+        &self,
+        input: &str,
+        options: &CompileOptions,
+    ) -> Result<TokelangProgram, EngineError> {
+        Ok(self.compiler.compile_with_options(input, options)?)
     }
 
     pub fn compile_cache_stats(&self) -> CompileCacheStats {
@@ -125,8 +143,22 @@ impl Engine {
     }
 
     pub fn passthrough_diagnostics(&self, input: &str) -> PassthroughDiagnostics {
-        let stats = normalize::protected_content_stats(input);
-        let stripped = normalize::strip_protected_content(input);
+        self.passthrough_diagnostics_with_options(input, &CompileOptions::default())
+    }
+
+    pub fn passthrough_diagnostics_with_options(
+        &self,
+        input: &str,
+        options: &CompileOptions,
+    ) -> PassthroughDiagnostics {
+        let protected_ranges = normalize_protected_ranges(input, &options.protected_ranges)
+            .unwrap_or_else(|_| options.protected_ranges.clone());
+        let protected_pairs = protected_ranges
+            .iter()
+            .map(|range| (range.start, range.end))
+            .collect::<Vec<_>>();
+        let stats = normalize::protected_content_stats_with_user(input, &protected_pairs);
+        let stripped = normalize::strip_protected_content_with_user(input, &protected_pairs);
         let cleaned = normalize::clean_input(&stripped);
         let natural_language_word_count = cleaned.split_whitespace().count();
         let protected_ratio_pct = if stats.total_chars == 0 {
@@ -148,8 +180,13 @@ impl Engine {
         }
     }
 
-    fn output_mode(&self, input: &str, tokelang_compact: &str) -> CompileMode {
-        let signals = self.routing_signals(input, tokelang_compact);
+    fn output_mode_with_options(
+        &self,
+        input: &str,
+        tokelang_compact: &str,
+        options: &CompileOptions,
+    ) -> CompileMode {
+        let signals = self.routing_signals(input, tokelang_compact, options);
         if signals.original_tokens == 0 {
             return CompileMode::Tokelang;
         }
@@ -163,7 +200,12 @@ impl Engine {
         }
     }
 
-    fn routing_signals(&self, input: &str, tokelang_compact: &str) -> RoutingSignals {
+    fn routing_signals(
+        &self,
+        input: &str,
+        tokelang_compact: &str,
+        options: &CompileOptions,
+    ) -> RoutingSignals {
         let original_tokens = self.tokenizer.count(input);
         let compact_tokens = self.tokenizer.count(tokelang_compact);
         let reduction_pct = if original_tokens == 0 {
@@ -171,7 +213,7 @@ impl Engine {
         } else {
             (original_tokens as f64 - compact_tokens as f64) / original_tokens as f64 * 100.0
         };
-        let diagnostics = self.passthrough_diagnostics(input);
+        let diagnostics = self.passthrough_diagnostics_with_options(input, options);
         let lowered = input.to_ascii_lowercase();
         let workflow_scaffold = has_workflow_scaffold(input);
 
@@ -230,8 +272,8 @@ impl Engine {
         }
     }
 
-    fn protected_content_demands_passthrough(&self, input: &str) -> bool {
-        let diagnostics = self.passthrough_diagnostics(input);
+    fn protected_content_demands_passthrough(&self, input: &str, options: &CompileOptions) -> bool {
+        let diagnostics = self.passthrough_diagnostics_with_options(input, options);
         let lowered = input.to_ascii_lowercase();
         let workflow_scaffold = has_workflow_scaffold(input);
         diagnostics.protected_content_passthrough
@@ -265,25 +307,40 @@ impl Engine {
             )
     }
 
-    fn compile_for_profile(
+    fn compile_for_profile_with_options(
         &self,
         input: &str,
         profile: SurfaceProfile,
+        options: &CompileOptions,
     ) -> Result<CompileResult, EngineError> {
-        if let Some(cached) = self.cache_lookup(input, profile) {
+        let normalized_options = CompileOptions {
+            protected_ranges: normalize_protected_ranges(input, &options.protected_ranges)?,
+        };
+
+        if let Some(cached) = self.cache_lookup(input, profile, &normalized_options) {
             return Ok(cached);
         }
 
-        let result = if self.protected_content_demands_passthrough(input) {
+        let result = if self.protected_content_demands_passthrough(input, &normalized_options) {
             CompileResult {
                 program: TokelangProgram::default(),
                 compact: input.to_string(),
                 mode: CompileMode::Passthrough,
             }
         } else {
-            let program = self.compiler.compile(input)?;
+            let program = self
+                .compiler
+                .compile_with_options(input, &normalized_options)?;
             let tokelang_compact = program.to_compact_with_profile(profile);
-            let mode = self.output_mode(input, &tokelang_compact);
+            let mode = if protected_spans_preserved_exactly(
+                input,
+                &tokelang_compact,
+                &normalized_options.protected_ranges,
+            ) {
+                self.output_mode_with_options(input, &tokelang_compact, &normalized_options)
+            } else {
+                CompileMode::Passthrough
+            };
             let compact = match mode {
                 CompileMode::Tokelang => tokelang_compact,
                 CompileMode::Passthrough => input.to_string(),
@@ -295,7 +352,7 @@ impl Engine {
             }
         };
 
-        self.cache_store(input, profile, &result);
+        self.cache_store(input, profile, &normalized_options, &result);
         Ok(result)
     }
 
@@ -303,7 +360,12 @@ impl Engine {
         input.len() >= MIN_CHARS_FOR_COMPILE_CACHE
     }
 
-    fn cache_lookup(&self, input: &str, profile: SurfaceProfile) -> Option<CompileResult> {
+    fn cache_lookup(
+        &self,
+        input: &str,
+        profile: SurfaceProfile,
+        options: &CompileOptions,
+    ) -> Option<CompileResult> {
         if !Self::should_cache_input(input) {
             return None;
         }
@@ -312,6 +374,7 @@ impl Engine {
             schema: COMPILE_CACHE_SCHEMA,
             profile,
             input: input.to_string(),
+            protected_ranges: options.protected_ranges.clone(),
         };
         let cache = self.cache.lock().expect("compile cache poisoned");
         let cached = cache.get(&key).cloned();
@@ -324,7 +387,13 @@ impl Engine {
         cached
     }
 
-    fn cache_store(&self, input: &str, profile: SurfaceProfile, result: &CompileResult) {
+    fn cache_store(
+        &self,
+        input: &str,
+        profile: SurfaceProfile,
+        options: &CompileOptions,
+        result: &CompileResult,
+    ) {
         if !Self::should_cache_input(input) {
             return;
         }
@@ -333,12 +402,36 @@ impl Engine {
             schema: COMPILE_CACHE_SCHEMA,
             profile,
             input: input.to_string(),
+            protected_ranges: options.protected_ranges.clone(),
         };
         self.cache
             .lock()
             .expect("compile cache poisoned")
             .insert(key, result.clone());
     }
+}
+
+fn protected_spans_preserved_exactly(
+    input: &str,
+    compact: &str,
+    protected_ranges: &[ProtectedRange],
+) -> bool {
+    if protected_ranges.is_empty() {
+        return true;
+    }
+
+    let mut required_counts = HashMap::<&str, usize>::new();
+    for range in protected_ranges {
+        let slice = &input[range.start..range.end];
+        if slice.is_empty() {
+            continue;
+        }
+        *required_counts.entry(slice).or_default() += 1;
+    }
+
+    required_counts
+        .into_iter()
+        .all(|(slice, needed)| compact.match_indices(slice).count() >= needed)
 }
 
 fn demands_fenced_code_passthrough(
@@ -385,71 +478,71 @@ fn demands_math_passthrough(
     let exactness_hits = count_contains(
         &lowered,
         &[
-        "solve this exactly",
-        "solve exactly",
-        "exact solution",
-        "exactly",
-        "symbolic derivation",
-        "symbolic proof",
-        "show all steps",
-        "keep the symbolic derivation explicit",
-        "do not approximate",
-        "without approximation",
-        "preserve the algebra",
+            "solve this exactly",
+            "solve exactly",
+            "exact solution",
+            "exactly",
+            "symbolic derivation",
+            "symbolic proof",
+            "show all steps",
+            "keep the symbolic derivation explicit",
+            "do not approximate",
+            "without approximation",
+            "preserve the algebra",
         ],
     );
     let math_action_hits = count_contains(
         &lowered,
         &[
-        "solve",
-        "compute",
-        "find",
-        "derive",
-        "differentiate",
-        "integrate",
-        "factor",
-        "simplify",
-        "project",
-        "maximize",
-        "minimize",
-        "prove",
-        "classify",
+            "solve",
+            "compute",
+            "find",
+            "derive",
+            "differentiate",
+            "integrate",
+            "factor",
+            "simplify",
+            "project",
+            "maximize",
+            "minimize",
+            "prove",
+            "classify",
         ],
     );
     let math_topic_hits = count_contains(
         &lowered,
         &[
-        "critical points",
-        "local extrema",
-        "eigenvalue",
-        "characteristic polynomial",
-        "lagrange multiplier",
-        "constraint",
-        "confidence interval",
-        "margin of error",
-        "sample mean",
-        "variance",
-        "standard deviation",
-        "median",
-        "triangle",
-        "similarity",
-        "angle",
-        "projection",
-        "dot product",
-        "probability",
-        "conditional probability",
-        "expected value",
-        "recurrence",
-        "closed form",
-        "induction",
-        "matrix",
-        "spectrum",
-        "root",
-        "roots",
-        "calculus",
-        "derivative",
-        "integral",
-        "factorization",
+            "critical points",
+            "local extrema",
+            "eigenvalue",
+            "characteristic polynomial",
+            "lagrange multiplier",
+            "constraint",
+            "confidence interval",
+            "margin of error",
+            "sample mean",
+            "variance",
+            "standard deviation",
+            "median",
+            "triangle",
+            "similarity",
+            "angle",
+            "projection",
+            "dot product",
+            "probability",
+            "conditional probability",
+            "expected value",
+            "recurrence",
+            "closed form",
+            "induction",
+            "matrix",
+            "spectrum",
+            "root",
+            "roots",
+            "calculus",
+            "derivative",
+            "integral",
+            "factorization",
         ],
     );
 
@@ -471,7 +564,17 @@ fn demands_contract_sensitive_passthrough(
     let rewrite_hits = count_contains(&lowered, &["rewrite", "adapt the tone", "adapt tone"]);
     let translation_hits = count_contains(&lowered, &["translate"]);
     let extraction_hits = count_contains(&lowered, &["extract", "normalize"])
-        + count_contains(&lowered, &[" fields", " field", "invoice number", "due date", "sender", "subject"]);
+        + count_contains(
+            &lowered,
+            &[
+                " fields",
+                " field",
+                "invoice number",
+                "due date",
+                "sender",
+                "subject",
+            ],
+        );
     let search_hits = count_contains(
         &lowered,
         &[
@@ -593,7 +696,9 @@ fn demands_row_heavy_passthrough(
     let tuple_rows = input
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with('(') && line.ends_with(')') && line.matches(',').count() >= 2)
+        .filter(|line| {
+            line.starts_with('(') && line.ends_with(')') && line.matches(',').count() >= 2
+        })
         .count();
     if tuple_rows < 2 {
         return false;
@@ -639,14 +744,22 @@ fn looks_like_inline_equation(line: &str) -> bool {
 
 fn has_workflow_scaffold(input: &str) -> bool {
     let lowered = input.to_ascii_lowercase();
-    if ["tasks:", "workflow:", "step 1", "phase 1", "stage 1", "then:"]
-        .iter()
-        .any(|needle| lowered.contains(needle))
+    if [
+        "tasks:",
+        "workflow:",
+        "step 1",
+        "phase 1",
+        "stage 1",
+        "then:",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
     {
         return true;
     }
 
-    input.lines()
+    input
+        .lines()
         .filter(|line| looks_like_list_line(line.trim_start()))
         .take(2)
         .count()
@@ -669,7 +782,10 @@ fn looks_like_list_line(line: &str) -> bool {
 }
 
 fn count_contains(text: &str, needles: &[&str]) -> usize {
-    needles.iter().filter(|needle| text.contains(**needle)).count()
+    needles
+        .iter()
+        .filter(|needle| text.contains(**needle))
+        .count()
 }
 
 fn min_token_savings_pct_for_signals(signals: &RoutingSignals) -> f64 {
@@ -745,21 +861,18 @@ fn row_heavy_policy_passthrough(signals: &RoutingSignals) -> bool {
 }
 
 fn count_tuple_rows(input: &str) -> usize {
-    input.lines()
+    input
+        .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with('(') && line.ends_with(')') && line.matches(',').count() >= 2)
+        .filter(|line| {
+            line.starts_with('(') && line.ends_with(')') && line.matches(',').count() >= 2
+        })
         .count()
 }
 
 fn is_short_output_note_prompt(lowered: &str) -> bool {
     let output_terms = [
-        "memo",
-        "note",
-        "brief",
-        "summary",
-        "reply",
-        "sheet",
-        "update",
+        "memo", "note", "brief", "summary", "reply", "sheet", "update",
     ];
     let short_terms = ["short", "brief", "concise"];
 
@@ -855,6 +968,7 @@ impl Default for Engine {
 #[cfg(test)]
 mod tests {
     use super::{CompileMode, Engine};
+    use crate::CompileOptions;
     use crate::ir::SurfaceProfile;
 
     #[test]
@@ -1127,8 +1241,7 @@ Tasks:
         assert!(compact.contains("request"));
         assert!(compact.contains("treatment outcomes"));
         assert!(
-            compact.contains("experimental protocol")
-                || compact.contains("experimental-protocol")
+            compact.contains("experimental protocol") || compact.contains("experimental-protocol")
         );
         assert!(!compact.contains("definition"));
         assert!(!compact.contains("comparison"));
@@ -1246,10 +1359,18 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
 5. Return a detailed escalation memo."#;
 
         let default = engine
-            .compile_for_profile(prompt, SurfaceProfile::Default)
+            .compile_for_profile_with_options(
+                prompt,
+                SurfaceProfile::Default,
+                &CompileOptions::default(),
+            )
             .expect("default profile compile");
         let robust = engine
-            .compile_for_profile(prompt, SurfaceProfile::Robust)
+            .compile_for_profile_with_options(
+                prompt,
+                SurfaceProfile::Robust,
+                &CompileOptions::default(),
+            )
             .expect("robust profile compile");
         let stats = engine.compile_cache_stats();
 

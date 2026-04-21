@@ -1,11 +1,12 @@
 use crate::compiler::coverage::{extract_coverage_items, reconcile_program};
 use crate::compiler::error::CompileError;
 use crate::compiler::normalize;
-use crate::compiler::segment::{ClauseSpan, ListMarkerKind, split_clauses};
+use crate::compiler::segment::{ClauseSpan, ListMarkerKind, split_clauses_with_protected_ranges};
 use crate::ir::{
     BlockType, ContextFlags, Entity, OutputHint, Relation, RelationKind, SemanticFrame, SourceSpan,
     TokelangBlock, TokelangIR, TokelangProgram,
 };
+use crate::options::{CompileOptions, ProtectedRange, normalize_protected_ranges};
 use crate::symbols::{Instruction, Modifier, OutputFormat, SubjectTable, SynonymTable};
 
 /// Natural-language prompt compiler.
@@ -31,15 +32,30 @@ impl Compiler {
     }
 
     pub fn compile(&self, input: &str) -> Result<TokelangProgram, CompileError> {
+        self.compile_with_options(input, &CompileOptions::default())
+    }
+
+    pub fn compile_with_options(
+        &self,
+        input: &str,
+        options: &CompileOptions,
+    ) -> Result<TokelangProgram, CompileError> {
         if input.trim().is_empty() {
             return Err(CompileError::EmptyInput);
         }
 
+        let protected_ranges = normalize_protected_ranges(input, &options.protected_ranges)?;
+        let protected_pairs = protected_ranges
+            .iter()
+            .map(|range| (range.start, range.end))
+            .collect::<Vec<_>>();
         let global_escaped = normalize::escape_reserved_symbols(input);
-        let global_cleaned = normalize::clean_input(&global_escaped);
+        let global_stripped =
+            normalize::strip_protected_content_with_user(global_escaped, &protected_pairs);
+        let global_cleaned = normalize::clean_input(&global_stripped);
         let global_words = normalize::tokenize_words(&global_cleaned);
         let global_flags = self.detect_flags(&global_words);
-        let clauses = split_clauses(input, &self.synonyms);
+        let clauses = split_clauses_with_protected_ranges(input, &self.synonyms, &protected_pairs);
         let coverage_items = extract_coverage_items(input);
 
         let structured_pipeline = self.should_use_structured_pipeline(input, &clauses);
@@ -49,13 +65,13 @@ impl Compiler {
             let clauses = self.propagate_shared_sections(clauses);
             let clauses = self.group_instruction_context(clauses);
             for clause in clauses {
-                if let Ok(ir) = self.compile_clause(&clause) {
+                if let Ok(ir) = self.compile_clause(&clause, &protected_ranges) {
                     compiled_items.push((clause, ir));
                 }
             }
         } else {
             for clause in clauses {
-                if let Ok(ir) = self.compile_clause(&clause) {
+                if let Ok(ir) = self.compile_clause(&clause, &protected_ranges) {
                     compiled_items.push((clause, ir));
                 }
             }
@@ -71,7 +87,10 @@ impl Compiler {
                 false,
                 None,
             );
-            compiled_items.push((whole_clause.clone(), self.compile_clause(&whole_clause)?));
+            compiled_items.push((
+                whole_clause.clone(),
+                self.compile_clause(&whole_clause, &protected_ranges)?,
+            ));
         }
 
         if let Some((_, first_item)) = compiled_items.first_mut() {
@@ -235,23 +254,23 @@ impl Compiler {
                     Some(ExplicitListHeading::Tasks) => {
                         pre_task_constraint_mode = false;
                     }
-                Some(ExplicitListHeading::Other) => {
-                    pre_task_constraint_mode = false;
-                    capture_mode = SharedCaptureMode::Carry;
-                    list_inference_enabled = false;
-                    last_list_instruction = None;
-                }
-                None => {
-                    if is_output_constraint_metadata_clause(&clause) {
-                        cluster
-                            .local_shared
-                            .push(compact_tail_local_output_constraint_clause(clause));
-                    } else {
-                        cluster.shared.push(clause);
+                    Some(ExplicitListHeading::Other) => {
+                        pre_task_constraint_mode = false;
+                        capture_mode = SharedCaptureMode::Carry;
+                        list_inference_enabled = false;
+                        last_list_instruction = None;
                     }
-                    continue;
+                    None => {
+                        if is_output_constraint_metadata_clause(&clause) {
+                            cluster
+                                .local_shared
+                                .push(compact_tail_local_output_constraint_clause(clause));
+                        } else {
+                            cluster.shared.push(clause);
+                        }
+                        continue;
+                    }
                 }
-            }
             }
 
             if starts_output_only_rules_mode {
@@ -944,8 +963,15 @@ impl Compiler {
         program
     }
 
-    fn compile_clause(&self, clause: &ClauseSpan) -> Result<TokelangIR, CompileError> {
-        let stripped = normalize::strip_protected_content(&clause.text);
+    fn compile_clause(
+        &self,
+        clause: &ClauseSpan,
+        protected_ranges: &[ProtectedRange],
+    ) -> Result<TokelangIR, CompileError> {
+        let stripped = normalize::strip_protected_content_with_user(
+            &clause.text,
+            &clause_local_protected_ranges(clause, protected_ranges),
+        );
         let cleaned = normalize::clean_input(&stripped);
         let words = normalize::tokenize_words(&cleaned);
 
@@ -956,7 +982,7 @@ impl Compiler {
         let instruction = control_instruction_for_clause(&cleaned)
             .or_else(|| self.detect_instruction(&words).ok())
             .ok_or(CompileError::NoInstruction)?;
-        self.compile_clause_with_words(clause, &words, instruction)
+        self.compile_clause_with_words(clause, &words, instruction, protected_ranges)
     }
 
     fn compile_clause_with_words(
@@ -964,6 +990,7 @@ impl Compiler {
         clause: &ClauseSpan,
         words: &[String],
         instruction: Instruction,
+        protected_ranges: &[ProtectedRange],
     ) -> Result<TokelangIR, CompileError> {
         if words.is_empty() {
             return Err(CompileError::NoSemanticContent);
@@ -973,13 +1000,16 @@ impl Compiler {
         flags.role = None;
         flags.audience = None;
         let mut modifiers = self.detect_modifiers(&words);
-        let cleaned_clause = clause.cleaned_text.as_str();
+        let cleaned_clause = normalize::clean_input(&normalize::strip_protected_content_with_user(
+            &clause.text,
+            &clause_local_protected_ranges(clause, protected_ranges),
+        ));
         let mut output_hint = self.detect_output_hint(&words);
         optimize_output_hint(&mut output_hint, instruction);
         let mut entities = self.extract_entities(&words);
         optimize_entities(&mut entities, words, &cleaned_clause);
         let relations = self.extract_relations(&words, &entities);
-        let mut literal_islands = extract_literal_islands(&clause.text);
+        let mut literal_islands = extract_literal_islands(clause, protected_ranges);
         let mut residual_terms = self.extract_residual_terms(&words, &entities);
         optimize_residual_terms(&mut residual_terms, words, instruction);
         optimize_literal_islands(&mut literal_islands, &mut entities, &mut residual_terms);
@@ -1001,6 +1031,7 @@ impl Compiler {
         if frame.entities.is_empty()
             && frame.relations.is_empty()
             && frame.output_hint.is_none()
+            && frame.literal_islands.is_empty()
             && frame.residual_terms.is_empty()
         {
             return Err(CompileError::NoSemanticContent);
@@ -1280,8 +1311,8 @@ impl Compiler {
         }
 
         let instruction_words = normalize::tokenize_words(&instruction_clause.cleaned_text)
-        .into_iter()
-        .collect::<std::collections::HashSet<_>>();
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
         let shared_context_has_rules = shared_context.iter().any(|clause| {
             let cleaned = clause.cleaned_text.as_str();
             cleaned == "rules" || cleaned.ends_with(" rules")
@@ -1466,8 +1497,8 @@ fn optimize_output_hint(output_hint: &mut Option<OutputHint>, instruction: Instr
 }
 
 fn optimize_entities(entities: &mut Vec<MatchedEntity>, words: &[String], cleaned_clause: &str) {
-    let is_controller_clause =
-        is_workflow_controller_clause_text(cleaned_clause) || workflow_controller_word_start(words).is_some();
+    let is_controller_clause = is_workflow_controller_clause_text(cleaned_clause)
+        || workflow_controller_word_start(words).is_some();
 
     if is_controller_clause {
         entities.retain(|entity| !matches!(entity.canonical.as_str(), "IF" | "OTHERWISE"));
@@ -2114,9 +2145,9 @@ fn compact_workflow_heading_clause(
     let compact_text = if child_list_follows {
         match kind {
             WorkflowScopeKind::Step => raw_tail.map(compact_heading_label),
-            WorkflowScopeKind::Phase
-            | WorkflowScopeKind::Stage
-            | WorkflowScopeKind::Section => None,
+            WorkflowScopeKind::Phase | WorkflowScopeKind::Stage | WorkflowScopeKind::Section => {
+                None
+            }
         }
     } else {
         raw_tail
@@ -2461,7 +2492,11 @@ fn rewrite_with_inherited_instruction(
     mut clause: ClauseSpan,
     instruction: Instruction,
 ) -> ClauseSpan {
-    clause.set_text(format!("{} {}", instruction_seed_word(instruction), clause.text));
+    clause.set_text(format!(
+        "{} {}",
+        instruction_seed_word(instruction),
+        clause.text
+    ));
     clause
 }
 
@@ -2750,9 +2785,7 @@ fn has_prior_numbered_workflow_controller(index: usize, clauses: &[ClauseSpan]) 
                 && previous.list_marker_kind == Some(ListMarkerKind::Numbered)
                 && previous.indent == clause.indent
         })
-        .any(|previous| {
-            is_workflow_controller_clause_text(&previous.cleaned_text)
-        })
+        .any(|previous| is_workflow_controller_clause_text(&previous.cleaned_text))
 }
 
 fn compact_branch_local_constraint_clause(mut clause: ClauseSpan) -> ClauseSpan {
@@ -2861,8 +2894,7 @@ fn control_instruction_for_clause(cleaned: &str) -> Option<Instruction> {
     }
 
     if let Some(remainder) = cleaned.strip_prefix("else ") {
-        return control_instruction_for_clause(remainder)
-            .or(Some(Instruction::Analyze));
+        return control_instruction_for_clause(remainder).or(Some(Instruction::Analyze));
     }
 
     if let Some(remainder) = cleaned.strip_prefix("if ") {
@@ -3041,7 +3073,11 @@ fn compact_controller_action(cleaned: &str, item: &TokelangIR) -> Option<String>
     let mut output = if remainder.is_empty() {
         instruction.mnemonic().to_string()
     } else {
-        format!("{} {}", instruction.mnemonic(), compact_control_phrase(remainder))
+        format!(
+            "{} {}",
+            instruction.mnemonic(),
+            compact_control_phrase(remainder)
+        )
     };
     append_modifier_suffix(&mut output, item.modifiers.as_slice());
     Some(output)
@@ -3237,7 +3273,9 @@ fn is_space_delimited_example_row_payload(text: &str) -> bool {
         && first
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
-        && first.chars().any(|character| character.is_ascii_alphanumeric())
+        && first
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric())
         && first == first.to_ascii_uppercase();
     if !first_is_id_like {
         return false;
@@ -3260,7 +3298,9 @@ fn is_space_delimited_example_row_payload(text: &str) -> bool {
         token.chars().any(|character| character.is_ascii_digit())
             || token.contains('?')
             || token.contains(':')
-            || token.chars().any(|character| matches!(character, '!' | '@' | '#'))
+            || token
+                .chars()
+                .any(|character| matches!(character, '!' | '@' | '#'))
     });
 
     has_data_like_tail
@@ -3348,22 +3388,61 @@ fn is_quoted_payload_clause(raw: &str, cleaned: &str) -> bool {
         && cleaned.split_whitespace().count() >= 5
 }
 
-fn extract_literal_islands(text: &str) -> Vec<String> {
-    if !may_contain_literal_islands(text) {
-        return Vec::new();
-    }
-
+fn extract_literal_islands(
+    clause: &ClauseSpan,
+    protected_ranges: &[ProtectedRange],
+) -> Vec<String> {
     let mut literals = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    collect_explicit_protected_literals(clause, protected_ranges, &mut literals, &mut seen);
 
-    collect_delimited_literals(text, '`', 1, &mut literals, &mut seen);
-    collect_delimited_literals(text, '"', 5, &mut literals, &mut seen);
-    collect_delimited_literals(text, '\'', 5, &mut literals, &mut seen);
-    collect_big_o_literals(text, &mut literals, &mut seen);
-    collect_token_literals(text, &mut literals, &mut seen);
-    collect_count_literals(text, &mut literals, &mut seen);
+    if !may_contain_literal_islands(&clause.text) && literals.is_empty() {
+        return literals;
+    }
+
+    collect_delimited_literals(&clause.text, '`', 1, &mut literals, &mut seen);
+    collect_delimited_literals(&clause.text, '"', 5, &mut literals, &mut seen);
+    collect_delimited_literals(&clause.text, '\'', 5, &mut literals, &mut seen);
+    collect_big_o_literals(&clause.text, &mut literals, &mut seen);
+    collect_token_literals(&clause.text, &mut literals, &mut seen);
+    collect_count_literals(&clause.text, &mut literals, &mut seen);
 
     literals
+}
+
+fn clause_local_protected_ranges(
+    clause: &ClauseSpan,
+    protected_ranges: &[ProtectedRange],
+) -> Vec<(usize, usize)> {
+    protected_ranges
+        .iter()
+        .filter_map(|range| {
+            if range.end <= clause.start || range.start >= clause.end {
+                return None;
+            }
+            let local_start = range.start.max(clause.start) - clause.start;
+            let local_end = range.end.min(clause.end) - clause.start;
+            Some((local_start, local_end))
+        })
+        .collect()
+}
+
+fn collect_explicit_protected_literals(
+    clause: &ClauseSpan,
+    protected_ranges: &[ProtectedRange],
+    literals: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for (start, end) in clause_local_protected_ranges(clause, protected_ranges) {
+        if start >= end || end > clause.text.len() {
+            continue;
+        }
+        let slice = &clause.text[start..end];
+        if slice.trim().is_empty() {
+            continue;
+        }
+        push_literal_island(slice, literals, seen);
+    }
 }
 
 fn may_contain_literal_islands(text: &str) -> bool {
@@ -3513,11 +3592,7 @@ fn collect_count_literals(
                     .get(index + 3)
                     .is_some_and(|unit| is_unit_word(&unit.to_ascii_lowercase()))
             {
-                push_literal_island(
-                    &format!("{current} {next} {number}"),
-                    literals,
-                    seen,
-                );
+                push_literal_island(&format!("{current} {next} {number}"), literals, seen);
             }
         }
 
@@ -3529,17 +3604,18 @@ fn collect_count_literals(
                 .get(index + 3)
                 .is_some_and(|unit| is_unit_word(&unit.to_ascii_lowercase()))
         {
-            push_literal_island(
-                &format!("{current} {than} {number}"),
-                literals,
-                seen,
-            );
+            push_literal_island(&format!("{current} {than} {number}"), literals, seen);
         }
     }
 }
 
 fn trim_literal_token(token: &str) -> &str {
-    token.trim_matches(|ch: char| matches!(ch, ',' | '.' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}'))
+    token.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            ',' | '.' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}'
+        )
+    })
 }
 
 fn is_url_like_literal(token: &str) -> bool {
@@ -3555,11 +3631,16 @@ fn is_date_like_literal(token: &str) -> bool {
     let parts = token.split('-').collect::<Vec<_>>();
     parts.len() == 3
         && parts[0].len() == 4
-        && parts.iter().all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn is_percentage_literal(token: &str) -> bool {
-    token.ends_with('%') && token[..token.len() - 1].chars().all(|ch| ch.is_ascii_digit())
+    token.ends_with('%')
+        && token[..token.len() - 1]
+            .chars()
+            .all(|ch| ch.is_ascii_digit())
 }
 
 fn is_short_duration_literal(token: &str) -> bool {
@@ -3908,7 +3989,7 @@ mod tests {
             false,
             None,
         );
-        let ir = compiler.compile_clause(&clause).unwrap();
+        let ir = compiler.compile_clause(&clause, &[]).unwrap();
         assert!(
             ir.frame
                 .relations
@@ -4732,7 +4813,9 @@ Return a short incident memo"#;
         assert!(
             item_count >= 4
                 && compact.contains("payment timing")
-                && (compact.contains("step 5") || compact.contains("goto5") || compact.contains("goto 5"))
+                && (compact.contains("step 5")
+                    || compact.contains("goto5")
+                    || compact.contains("goto 5"))
                 && compact.contains("delivery")
                 && compact.contains("exceptions")
                 && (compact.contains("legal memo") || compact.contains("legal-memo")),

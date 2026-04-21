@@ -144,8 +144,8 @@ static DESCRIPTOR_WORDS: &[&str] = &[
 ];
 
 static COMMON_NOISE_CHARS: &[char] = &[
-    '¡', '¢', '£', '¤', '¥', '¦', '§', '¨', '©', 'ª', '«', '¬', '®', '¯', '°', '±', '²', '³',
-    'µ', '¶', '¹', 'º', '»', '¼', '½', '¾', '¿', 'À', 'Á', 'Ξ',
+    '¡', '¢', '£', '¤', '¥', '¦', '§', '¨', '©', 'ª', '«', '¬', '®', '¯', '°', '±', '²', '³', 'µ',
+    '¶', '¹', 'º', '»', '¼', '½', '¾', '¿', 'À', 'Á', 'Ξ',
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,18 +163,16 @@ pub fn clean_input(input: &str) -> String {
     let mut needs_space = false;
 
     for character in input.chars() {
-        let normalized = if character.is_alphanumeric()
-            || character == '-'
-            || is_reserved_symbol(character)
-        {
-            Some(if is_reserved_symbol(character) {
-                character
+        let normalized =
+            if character.is_alphanumeric() || character == '-' || is_reserved_symbol(character) {
+                Some(if is_reserved_symbol(character) {
+                    character
+                } else {
+                    character.to_ascii_lowercase()
+                })
             } else {
-                character.to_ascii_lowercase()
-            })
-        } else {
-            None
-        };
+                None
+            };
 
         if let Some(character) = normalized {
             if needs_space && !cleaned.is_empty() {
@@ -216,23 +214,48 @@ pub fn canonicalize_term(term: &str) -> String {
         .collect()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn protected_ranges(input: &str) -> Vec<(usize, usize)> {
+    protected_ranges_with_user(input, &[])
+}
+
+pub(crate) fn protected_ranges_with_user(
+    input: &str,
+    user_ranges: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
     let mut ranges = fenced_code_ranges(input);
     ranges.extend(inline_code_ranges(input, &ranges));
+    ranges.extend_from_slice(user_ranges);
     merge_ranges(ranges)
 }
 
 pub(crate) fn strip_protected_content(input: &str) -> String {
-    let masked = mask_ranges_preserving_newlines(input, &protected_ranges(input));
+    strip_protected_content_with_user(input, &[])
+}
+
+pub(crate) fn strip_protected_content_with_user(
+    input: &str,
+    user_ranges: &[(usize, usize)],
+) -> String {
+    let masked =
+        mask_ranges_preserving_newlines(input, &protected_ranges_with_user(input, user_ranges));
     strip_equation_content(&masked)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn protected_content_stats(input: &str) -> ProtectedContentStats {
+    protected_content_stats_with_user(input, &[])
+}
+
+pub(crate) fn protected_content_stats_with_user(
+    input: &str,
+    user_ranges: &[(usize, usize)],
+) -> ProtectedContentStats {
     let total_chars = input
         .chars()
         .filter(|character| !character.is_whitespace())
         .count();
-    let ranges = protected_ranges(input);
+    let ranges = protected_ranges_with_user(input, user_ranges);
     let mut protected_chars = count_non_whitespace_chars_in_ranges(input, &ranges);
     let masked = mask_ranges_preserving_newlines(input, &ranges);
 

@@ -6,6 +6,9 @@ pub enum CompileError {
     #[error("input is empty")]
     EmptyInput,
 
+    #[error("invalid protected span: {0}")]
+    InvalidProtectedSpan(String),
+
     #[error("no instruction could be detected in input")]
     NoInstruction,
 

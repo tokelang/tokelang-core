@@ -16,7 +16,11 @@ pub fn parse_program(input: &str) -> Result<TokelangProgram, ParseError> {
     let mut current_block = TokelangBlock::new(BlockType::Default);
     let mut prefix_flags = ContextFlags::default();
 
-    for line in trimmed.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         if parse_prefix_line(line, &mut prefix_flags) {
             continue;
         }
@@ -307,7 +311,8 @@ fn push_entity(frame: &mut SemanticFrame, canonical: &str) {
 }
 
 fn canonical_phrase(value: &str) -> String {
-    value.split_whitespace()
+    value
+        .split_whitespace()
         .map(|part| {
             part.chars()
                 .map(|character| {

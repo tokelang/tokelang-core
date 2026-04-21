@@ -67,10 +67,19 @@ impl ClauseSpan {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn split_clauses(input: &str, synonyms: &SynonymTable) -> Vec<ClauseSpan> {
+    split_clauses_with_protected_ranges(input, synonyms, &[])
+}
+
+pub fn split_clauses_with_protected_ranges(
+    input: &str,
+    synonyms: &SynonymTable,
+    protected_ranges: &[(usize, usize)],
+) -> Vec<ClauseSpan> {
     let mut first_pass = Vec::new();
     let mut start = 0usize;
-    let protected_ranges = normalize::protected_ranges(input);
+    let protected_ranges = normalize::protected_ranges_with_user(input, protected_ranges);
 
     for (index, character) in input.char_indices() {
         if is_inside_protected_range(index, &protected_ranges) {
@@ -345,8 +354,12 @@ fn is_inside_exact_token_period(input: &str, index: usize) -> bool {
         .find(|character: char| character.is_whitespace())
         .map(|offset| index + offset)
         .unwrap_or(input.len());
-    let token = input[line_start..line_end]
-        .trim_matches(|ch: char| matches!(ch, ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\''));
+    let token = input[line_start..line_end].trim_matches(|ch: char| {
+        matches!(
+            ch,
+            ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\''
+        )
+    });
 
     token.contains("://")
         || (token.contains('/') && token.contains('.'))

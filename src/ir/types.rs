@@ -247,9 +247,7 @@ impl TokelangIR {
     ) -> String {
         let mut parts = Vec::new();
 
-        if include_sequence
-            && let Some(sequence_id) = self.sequence_id
-        {
+        if include_sequence && let Some(sequence_id) = self.sequence_id {
             parts.push(sequence_id.to_string());
         }
 
@@ -290,9 +288,9 @@ impl TokelangIR {
             .any(|literal| literal.to_uppercase().contains(&label_upper))
             || self
                 .frame
-            .residual_terms
-            .iter()
-            .any(|term| term == &label_upper)
+                .residual_terms
+                .iter()
+                .any(|term| term == &label_upper)
             || self
                 .frame
                 .output_hint
@@ -413,7 +411,9 @@ fn apply_lexical_joins(tokens: &mut Vec<String>) {
     let mut index = 0usize;
     while index + 1 < tokens.len() {
         if tokens[index] == "goto"
-            && tokens[index + 1].chars().all(|character| character.is_ascii_digit())
+            && tokens[index + 1]
+                .chars()
+                .all(|character| character.is_ascii_digit())
         {
             let target = tokens.remove(index + 1);
             tokens[index] = format!("goto{target}");
@@ -524,7 +524,8 @@ impl TokelangBlock {
         }
 
         let items = lines.join("\n");
-        let default_line = default_modifier.map(|modifier| format!("default {}", modifier.mnemonic()));
+        let default_line =
+            default_modifier.map(|modifier| format!("default {}", modifier.mnemonic()));
 
         match (self.block_type.marker(), default_line) {
             (Some(marker), Some(default_line)) => format!("{marker}\n{default_line}\n{items}"),
@@ -675,9 +676,9 @@ fn contains_step_reference(line: &str) -> bool {
 fn contains_goto_reference(line: &str) -> bool {
     line.split_whitespace().any(|token| {
         token == "goto"
-            || token
-                .strip_prefix("goto")
-                .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()))
+            || token.strip_prefix("goto").is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+            })
     })
 }
 

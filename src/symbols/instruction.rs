@@ -117,10 +117,25 @@ mod tests {
 
     #[test]
     fn robust_alias_roundtrip() {
-        assert_eq!(Instruction::from_mnemonic("review"), Some(Instruction::Analyze));
-        assert_eq!(Instruction::from_mnemonic("find"), Some(Instruction::Search));
-        assert_eq!(Instruction::from_mnemonic("digest"), Some(Instruction::Summarize));
-        assert_eq!(Instruction::from_mnemonic("change"), Some(Instruction::Transform));
-        assert_eq!(Instruction::from_mnemonic("finish"), Some(Instruction::Conclude));
+        assert_eq!(
+            Instruction::from_mnemonic("review"),
+            Some(Instruction::Analyze)
+        );
+        assert_eq!(
+            Instruction::from_mnemonic("find"),
+            Some(Instruction::Search)
+        );
+        assert_eq!(
+            Instruction::from_mnemonic("digest"),
+            Some(Instruction::Summarize)
+        );
+        assert_eq!(
+            Instruction::from_mnemonic("change"),
+            Some(Instruction::Transform)
+        );
+        assert_eq!(
+            Instruction::from_mnemonic("finish"),
+            Some(Instruction::Conclude)
+        );
     }
 }
