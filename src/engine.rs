@@ -1183,6 +1183,41 @@ mod tests {
     }
 
     #[test]
+    fn validator_recovers_structured_output_that_drops_multiple_bracket_payloads() {
+        let engine = Engine::new();
+        let prompt = "Compare [Option A: lower rent, longer commute] with [Option B: higher rent, shorter commute] and tell me which tradeoffs to quantify.";
+
+        let result = engine.compile(prompt).expect("prompt should compile");
+
+        assert_eq!(result.mode, CompileMode::Tokelang);
+        assert!(
+            result
+                .compact
+                .contains("[Option A: lower rent, longer commute]")
+        );
+        assert!(
+            result
+                .compact
+                .contains("[Option B: higher rent, shorter commute]")
+        );
+    }
+
+    #[test]
+    fn validator_recovers_structured_output_that_drops_stack_trace_placeholder() {
+        let engine = Engine::new();
+        let prompt = "Explain this error in plain English and give likely causes: [paste stack trace with file paths and line numbers].";
+
+        let result = engine.compile(prompt).expect("prompt should compile");
+
+        assert_eq!(result.mode, CompileMode::Tokelang);
+        assert!(
+            result
+                .compact
+                .contains("[paste stack trace with file paths and line numbers]")
+        );
+    }
+
+    #[test]
     fn falls_back_to_original_prompt_when_token_savings_are_too_small() {
         let engine = Engine::new();
         let prompt = "Explain AI in depth.";

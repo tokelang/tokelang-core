@@ -98,9 +98,23 @@ pub(crate) fn content_recall(original: &str, compact: &str) -> f64 {
 pub(crate) fn hard_zones_preserved(original: &str, compact: &str) -> bool {
     hard_zones(original)
         .into_iter()
-        .map(|zone| original[zone.start..zone.end].trim())
-        .filter(|literal| !literal.is_empty())
-        .all(|literal| compact.contains(literal))
+        .all(|zone| hard_zone_preserved(original, compact, zone))
+}
+
+fn hard_zone_preserved(original: &str, compact: &str, zone: HardZone) -> bool {
+    let literal = original[zone.start..zone.end].trim();
+    if literal.is_empty() {
+        return true;
+    }
+    if compact.contains(literal) {
+        return true;
+    }
+    if literal.starts_with('"') && literal.ends_with('"') && literal.len() >= 2 {
+        let inner = &literal[1..literal.len() - 1];
+        let canonical_literal = format!("`{inner}`");
+        return compact.contains(&canonical_literal);
+    }
+    false
 }
 
 pub(crate) fn should_prefer_general(
@@ -303,14 +317,71 @@ fn collect_bracket_placeholders(input: &str, zones: &mut Vec<HardZone>) {
 fn is_bracket_placeholder_inner(inner: &str) -> bool {
     let trimmed = inner.trim();
     !trimmed.is_empty()
-        && trimmed.len() <= 80
-        && trimmed.split_whitespace().count() <= 8
+        && !is_bracket_control_label(trimmed)
+        && !is_code_like_bracket_inner(trimmed)
+        && trimmed.len() <= 160
+        && trimmed.split_whitespace().count() <= 14
         && !trimmed.contains('\n')
+        && trimmed.chars().any(|ch| ch.is_alphanumeric())
         && trimmed.chars().all(|ch| {
             ch.is_alphanumeric()
                 || ch.is_whitespace()
-                || matches!(ch, '_' | '-' | '.' | '/' | '$' | ':')
+                || matches!(ch, '_' | '-' | '.' | '/' | '$' | ':' | ',' | ';')
         })
+}
+
+fn is_bracket_control_label(trimmed: &str) -> bool {
+    matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "inp"
+            | "input"
+            | "ctx"
+            | "context"
+            | "prc"
+            | "process"
+            | "out"
+            | "output"
+            | "task"
+            | "tasks"
+            | "rules"
+            | "examples"
+            | "extra"
+            | "extra challenge"
+    )
+}
+
+fn is_code_like_bracket_inner(trimmed: &str) -> bool {
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "str"
+            | "string"
+            | "int"
+            | "integer"
+            | "float"
+            | "double"
+            | "bool"
+            | "boolean"
+            | "list"
+            | "dict"
+            | "map"
+            | "array"
+            | "object"
+            | "json"
+            | "..."
+    ) {
+        return true;
+    }
+    if trimmed
+        .chars()
+        .all(|ch| ch == '.' || ch == '_' || ch == '-' || ch.is_whitespace())
+    {
+        return true;
+    }
+    let word_count = trimmed.split_whitespace().count();
+    word_count == 1
+        && lower.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')
+        && !lower.starts_with("paste")
 }
 
 fn collect_template_placeholders(input: &str, zones: &mut Vec<HardZone>) {
@@ -976,6 +1047,73 @@ mod tests {
         assert!(!candidate.compact.contains("Can you please"));
         assert!(candidate.compact.contains("summarize"));
         assert!(candidate.compact.contains("checklist"));
+    }
+
+    #[test]
+    fn preserves_bracket_placeholder_with_commas_exactly() {
+        let tokenizer = Tokenizer::detect();
+        let input = "Compare [Option A: lower rent, longer commute] with [Option B: higher rent, shorter commute] and tell me which tradeoffs to quantify.";
+
+        let candidate = candidate(input, &tokenizer).expect("option prompt should compress");
+
+        assert!(
+            candidate
+                .compact
+                .contains("[Option A: lower rent, longer commute]")
+        );
+        assert!(
+            candidate
+                .compact
+                .contains("[Option B: higher rent, shorter commute]")
+        );
+    }
+
+    #[test]
+    fn preserves_long_bracket_placeholder_exactly() {
+        let tokenizer = Tokenizer::detect();
+        let input = "Explain this error in plain English and give likely causes: [paste stack trace with file paths and line numbers].";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("stack trace placeholder should compress");
+
+        assert!(
+            candidate
+                .compact
+                .contains("[paste stack trace with file paths and line numbers]")
+        );
+    }
+
+    #[test]
+    fn does_not_treat_section_tags_as_bracket_placeholders() {
+        let tokenizer = Tokenizer::detect();
+        let input = "[inp]\nFacts here.\n[prc]\nSummarize them.\n[out]\nReturn memo.";
+
+        let candidate = candidate(input, &tokenizer).expect("section tag prompt should compress");
+
+        assert!(!candidate.compact.contains("[inp]"));
+        assert!(!candidate.compact.contains("[prc]"));
+        assert!(!candidate.compact.contains("[out]"));
+    }
+
+    #[test]
+    fn does_not_treat_type_or_ellipsis_brackets_as_placeholders() {
+        let tokenizer = Tokenizer::detect();
+        let input = r#"Write function analyze_logs(logs: List[str]) -> Dict that returns {"cleaned_logs": [...]}."#;
+
+        let candidate = candidate(input, &tokenizer).expect("type syntax prompt should compress");
+
+        assert!(!candidate.compact.contains("[str]"));
+        assert!(!candidate.compact.contains("[...]"));
+    }
+
+    #[test]
+    fn accepts_canonical_backtick_for_quoted_hard_zone() {
+        let input = r#"Keep "do not delete customer data" separate."#;
+
+        assert!(hard_zones_preserved(
+            input,
+            "keep `do not delete customer data` separate"
+        ));
     }
 
     #[test]
