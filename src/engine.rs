@@ -10,6 +10,7 @@ use crate::ir::{
 use crate::options::{CompileOptions, ProtectedRange, normalize_protected_ranges};
 use crate::symbols::Instruction;
 use crate::token_metrics::Tokenizer;
+use crate::validator;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -390,8 +391,55 @@ impl Engine {
             }
         };
 
+        let result = self.validate_or_recover(input, profile, &normalized_options, result);
         self.cache_store(input, profile, &normalized_options, &result);
         Ok(result)
+    }
+
+    fn validate_or_recover(
+        &self,
+        input: &str,
+        profile: SurfaceProfile,
+        options: &CompileOptions,
+        result: CompileResult,
+    ) -> CompileResult {
+        if result.mode == CompileMode::Passthrough {
+            return result;
+        }
+        if profile != SurfaceProfile::Default
+            || has_workflow_scaffold(input)
+            || has_leading_sequence_scaffold(input)
+            || !should_run_compact_validator(&result)
+        {
+            return result;
+        }
+
+        let report = validator::validate_compact(input, &result.compact);
+        if report.passed {
+            return result;
+        }
+
+        if let Some(candidate) = general_text::candidate(input, &self.tokenizer) {
+            let candidate_valid = validator::validate_compact(input, &candidate.compact).passed
+                && protected_spans_preserved_exactly(
+                    input,
+                    &candidate.compact,
+                    &options.protected_ranges,
+                );
+            if candidate_valid {
+                return CompileResult {
+                    program: general_text_program(input, &candidate.compact),
+                    compact: candidate.compact,
+                    mode: CompileMode::Tokelang,
+                };
+            }
+        }
+
+        CompileResult {
+            program: TokelangProgram::default(),
+            compact: input.to_string(),
+            mode: CompileMode::Passthrough,
+        }
     }
 
     fn should_cache_input(input: &str) -> bool {
@@ -447,6 +495,27 @@ impl Engine {
             .expect("compile cache poisoned")
             .insert(key, result.clone());
     }
+}
+
+fn should_run_compact_validator(result: &CompileResult) -> bool {
+    if result.program.blocks.is_empty() {
+        return true;
+    }
+    if result.program.blocks.len() != 1 {
+        return false;
+    }
+
+    let block = &result.program.blocks[0];
+    if block.block_type != BlockType::Default || block.items.len() != 1 {
+        return false;
+    }
+
+    let item = &block.items[0];
+    item.instruction == Instruction::Generate
+        && item
+            .compact_override
+            .as_deref()
+            .is_some_and(|compact| compact.trim() == result.compact.trim())
 }
 
 fn protected_spans_preserved_exactly(
@@ -1040,9 +1109,9 @@ impl Default for Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompileMode, Engine};
-    use crate::CompileOptions;
+    use super::{CompileMode, CompileResult, Engine};
     use crate::ir::SurfaceProfile;
+    use crate::{CompileOptions, TokelangProgram};
 
     #[test]
     fn keeps_tokelang_output_when_token_savings_clear_threshold() {
@@ -1055,6 +1124,42 @@ mod tests {
 
         assert_eq!(result.mode, CompileMode::Tokelang);
         assert_ne!(result.compact, prompt);
+    }
+
+    #[test]
+    fn validator_recovers_bad_compact_with_general_text_candidate() {
+        let engine = Engine::new();
+        let prompt = "Rewrite this message to my landlord so it is firm but polite: the bathroom ceiling leak was reported twice, the damp patch is spreading, and I need a repair date in writing by Friday without sounding threatening.";
+        let bad_result = CompileResult {
+            program: TokelangProgram::default(),
+            compact: "rewrite landlord message".to_string(),
+            mode: CompileMode::Tokelang,
+        };
+
+        let recovered = engine.validate_or_recover(
+            prompt,
+            SurfaceProfile::Default,
+            &CompileOptions::default(),
+            bad_result,
+        );
+
+        assert_eq!(recovered.mode, CompileMode::Tokelang);
+        assert!(recovered.compact.contains("ceiling leak"));
+        assert!(recovered.compact.contains("reported twice"));
+        assert!(recovered.compact.contains("damp patch spreading"));
+        assert!(recovered.compact.contains("Friday"));
+    }
+
+    #[test]
+    fn validator_accepts_telegraphic_external_prompt() {
+        let engine = Engine::new();
+        let prompt = "As a dietitian, I would like to design a vegetarian recipe for 2 people that has approximate 500 calories per serving and has a low glycemic index. Can you please provide a suggestion?";
+
+        let result = engine.compile(prompt).expect("prompt should compile");
+
+        assert_eq!(result.mode, CompileMode::Tokelang);
+        assert!(result.compact.contains("low glycemic index"));
+        assert!(result.compact.contains("500 calories"));
     }
 
     #[test]

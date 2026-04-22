@@ -1,4 +1,5 @@
 use crate::token_metrics::Tokenizer;
+use crate::validator;
 use std::collections::HashSet;
 
 const MIN_GENERAL_SAVINGS_PCT: f64 = 8.0;
@@ -146,9 +147,58 @@ pub(crate) fn should_prefer_general(
 }
 
 fn compress(input: &str) -> Option<String> {
+    let hard_zones = hard_zones(input);
+    if hard_zones.is_empty() {
+        return compress_unprotected(input);
+    }
+
+    let mut parts = Vec::new();
+    let mut cursor = 0usize;
+
+    for zone in hard_zones {
+        if cursor < zone.start {
+            parts.extend(compress_unprotected_parts(&input[cursor..zone.start]));
+        }
+
+        let literal = input[zone.start..zone.end].trim();
+        if !literal.is_empty() {
+            parts.push(literal.to_string());
+        }
+
+        cursor = zone.end;
+    }
+
+    if cursor < input.len() {
+        parts.extend(compress_unprotected_parts(&input[cursor..]));
+    }
+
+    let compact = parts.join(" ");
+    if compact.is_empty() {
+        None
+    } else {
+        Some(compact)
+    }
+}
+
+fn compress_unprotected(input: &str) -> Option<String> {
+    let parts = compress_unprotected_parts(input);
+    if parts.is_empty() {
+        return None;
+    }
+
+    let compact = parts.join(" ");
+    let compact = compact.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        None
+    } else {
+        Some(compact)
+    }
+}
+
+fn compress_unprotected_parts(input: &str) -> Vec<String> {
     let tokens = lexical_tokens(input);
     if tokens.is_empty() {
-        return None;
+        return Vec::new();
     }
 
     let mut kept = Vec::new();
@@ -170,16 +220,156 @@ fn compress(input: &str) -> Option<String> {
     }
 
     if kept.is_empty() {
-        return None;
+        return Vec::new();
     }
 
-    let compact = collapse_common_phrases(kept).join(" ");
-    let compact = compact.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.is_empty() {
-        None
-    } else {
-        Some(compact)
+    collapse_common_phrases(kept)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HardZone {
+    start: usize,
+    end: usize,
+}
+
+fn hard_zones(input: &str) -> Vec<HardZone> {
+    let mut zones = Vec::new();
+    collect_bracket_placeholders(input, &mut zones);
+    collect_template_placeholders(input, &mut zones);
+    collect_delimited_hard_zones(input, '"', &mut zones);
+    if !input.contains("```") {
+        collect_delimited_hard_zones(input, '`', &mut zones);
     }
+    normalize_hard_zones(zones)
+}
+
+fn normalize_hard_zones(mut zones: Vec<HardZone>) -> Vec<HardZone> {
+    zones.sort_by_key(|zone| (zone.start, zone.end));
+    let mut normalized = Vec::new();
+
+    for zone in zones {
+        if zone.start >= zone.end {
+            continue;
+        }
+        if normalized
+            .last()
+            .is_some_and(|previous: &HardZone| zone.start < previous.end)
+        {
+            continue;
+        }
+        normalized.push(zone);
+    }
+
+    normalized
+}
+
+fn collect_bracket_placeholders(input: &str, zones: &mut Vec<HardZone>) {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] != b'[' {
+            index += 1;
+            continue;
+        }
+
+        let Some(end_index) = input[index + 1..]
+            .find(']')
+            .map(|offset| index + 1 + offset)
+        else {
+            break;
+        };
+
+        let inner = &input[index + 1..end_index];
+        if is_bracket_placeholder_inner(inner) {
+            zones.push(HardZone {
+                start: index,
+                end: end_index + 1,
+            });
+        }
+
+        index = end_index + 1;
+    }
+}
+
+fn is_bracket_placeholder_inner(inner: &str) -> bool {
+    let trimmed = inner.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 80
+        && trimmed.split_whitespace().count() <= 8
+        && !trimmed.contains('\n')
+        && trimmed.chars().all(|ch| {
+            ch.is_alphanumeric()
+                || ch.is_whitespace()
+                || matches!(ch, '_' | '-' | '.' | '/' | '$' | ':')
+        })
+}
+
+fn collect_template_placeholders(input: &str, zones: &mut Vec<HardZone>) {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+
+    while index + 1 < bytes.len() {
+        if bytes[index] != b'$' || bytes[index + 1] != b'{' {
+            index += 1;
+            continue;
+        }
+
+        let Some(end_index) = input[index + 2..]
+            .find('}')
+            .map(|offset| index + 2 + offset)
+        else {
+            break;
+        };
+
+        let inner = &input[index + 2..end_index];
+        if is_template_placeholder_inner(inner) {
+            zones.push(HardZone {
+                start: index,
+                end: end_index + 1,
+            });
+        }
+
+        index = end_index + 1;
+    }
+}
+
+fn is_template_placeholder_inner(inner: &str) -> bool {
+    let trimmed = inner.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 100
+        && !trimmed.contains('\n')
+        && trimmed.chars().all(|ch| {
+            ch.is_alphanumeric()
+                || ch.is_whitespace()
+                || matches!(ch, '_' | '-' | '.' | '/' | ':' | ',')
+        })
+}
+
+fn collect_delimited_hard_zones(input: &str, delimiter: char, zones: &mut Vec<HardZone>) {
+    let mut start = None;
+
+    for (index, ch) in input.char_indices() {
+        if ch != delimiter {
+            continue;
+        }
+
+        if let Some(open_index) = start.take() {
+            let inner = input[open_index + delimiter.len_utf8()..index].trim();
+            if is_delimited_hard_zone_inner(inner) {
+                zones.push(HardZone {
+                    start: open_index,
+                    end: index + delimiter.len_utf8(),
+                });
+            }
+        } else {
+            start = Some(index);
+        }
+    }
+}
+
+fn is_delimited_hard_zone_inner(inner: &str) -> bool {
+    !inner.is_empty() && inner.len() <= 1000
 }
 
 fn lexical_tokens(input: &str) -> Vec<String> {
@@ -230,7 +420,11 @@ fn should_drop_token(
     next: Option<&String>,
     index: usize,
 ) -> bool {
-    if is_negation(lower) || is_constraint_word(lower) || is_output_shape_word(lower) {
+    if validator::is_critical_token(lower)
+        || is_negation(lower)
+        || is_constraint_word(lower)
+        || is_output_shape_word(lower)
+    {
         return false;
     }
 
@@ -733,6 +927,85 @@ mod tests {
         assert!(candidate.compact.contains("not require protein powder"));
         assert!(candidate.compact.contains("not sweet"));
         assert!(candidate.compact.contains("before work"));
+    }
+
+    #[test]
+    fn source_retention_keeps_validator_critical_tokens() {
+        let tokenizer = Tokenizer::detect();
+        let input = "Please create a JSON checklist before Friday, include exactly 3 items, and only reply with pseudocode.";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("critical-token prompt should compress");
+
+        for anchor in [
+            "JSON",
+            "checklist",
+            "before",
+            "Friday",
+            "include",
+            "exactly",
+            "3",
+            "only",
+            "pseudocode",
+        ] {
+            assert!(
+                candidate.compact.contains(anchor),
+                "expected `{anchor}` in compact output:\n{}",
+                candidate.compact
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_bracket_placeholder_exactly() {
+        let tokenizer = Tokenizer::detect();
+        let input =
+            "Can you please summarize the following meeting notes into a checklist: [paste notes].";
+
+        let candidate = candidate(input, &tokenizer).expect("placeholder prompt should compress");
+
+        assert!(candidate.compact.contains("[paste notes]"));
+        assert!(!candidate.compact.contains("Can you please"));
+        assert!(candidate.compact.contains("summarize"));
+        assert!(candidate.compact.contains("checklist"));
+    }
+
+    #[test]
+    fn preserves_template_placeholder_exactly() {
+        let tokenizer = Tokenizer::detect();
+        let input = "I want you to only reply as the interviewer for the ${Position:Software Developer} position. Do not write explanations.";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("template placeholder prompt should compress");
+
+        assert!(candidate.compact.contains("${Position:Software Developer}"));
+        assert!(candidate.compact.contains("only reply"));
+        assert!(candidate.compact.contains("not write explanations"));
+    }
+
+    #[test]
+    fn preserves_quoted_payload_exactly() {
+        let tokenizer = Tokenizer::detect();
+        let input = "Please act as an interviewer, ask one question, and wait for my answer. My first sentence is \"Hi\".";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("quoted-payload prompt should compress");
+
+        assert!(candidate.compact.contains("\"Hi\""));
+        assert!(candidate.compact.contains("act as interviewer"));
+        assert!(candidate.compact.contains("ask one question"));
+        assert!(candidate.compact.contains("wait answer"));
+    }
+
+    #[test]
+    fn preserves_hard_zone_internal_spacing() {
+        let tokenizer = Tokenizer::detect();
+        let input = "Please summarize this placeholder without changing it: [paste   exact notes].";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("spacing placeholder prompt should compress");
+
+        assert!(candidate.compact.contains("[paste   exact notes]"));
     }
 
     #[test]

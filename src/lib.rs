@@ -6,6 +6,7 @@ pub mod ir;
 mod options;
 pub mod symbols;
 mod token_metrics;
+mod validator;
 
 pub use engine::{CompileMode, CompileResult, Engine, PassthroughDiagnostics};
 pub use error::EngineError;
