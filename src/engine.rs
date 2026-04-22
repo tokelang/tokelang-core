@@ -409,18 +409,25 @@ impl Engine {
         if profile != SurfaceProfile::Default
             || has_workflow_scaffold(input)
             || has_leading_sequence_scaffold(input)
-            || !should_run_compact_validator(&result)
         {
             return result;
         }
 
-        let report = validator::validate_compact(input, &result.compact);
-        if report.passed {
+        let hard_zones_preserved = general_text::hard_zones_preserved(input, &result.compact);
+        if hard_zones_preserved && !should_run_compact_validator(&result) {
             return result;
+        }
+
+        if hard_zones_preserved {
+            let report = validator::validate_compact(input, &result.compact);
+            if report.passed {
+                return result;
+            }
         }
 
         if let Some(candidate) = general_text::candidate(input, &self.tokenizer) {
             let candidate_valid = validator::validate_compact(input, &candidate.compact).passed
+                && general_text::hard_zones_preserved(input, &candidate.compact)
                 && protected_spans_preserved_exactly(
                     input,
                     &candidate.compact,
@@ -1160,6 +1167,19 @@ mod tests {
         assert_eq!(result.mode, CompileMode::Tokelang);
         assert!(result.compact.contains("low glycemic index"));
         assert!(result.compact.contains("500 calories"));
+    }
+
+    #[test]
+    fn validator_recovers_structured_output_that_drops_bracket_placeholder() {
+        let engine = Engine::new();
+        let prompt =
+            "Please summarize this into decisions and action items: [paste   exact notes].";
+
+        let result = engine.compile(prompt).expect("prompt should compile");
+
+        assert_eq!(result.mode, CompileMode::Tokelang);
+        assert!(result.compact.contains("[paste   exact notes]"));
+        assert!(!result.compact.contains("paste exact notes simple"));
     }
 
     #[test]

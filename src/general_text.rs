@@ -95,6 +95,14 @@ pub(crate) fn content_recall(original: &str, compact: &str) -> f64 {
     retained as f64 / original_tokens.len() as f64
 }
 
+pub(crate) fn hard_zones_preserved(original: &str, compact: &str) -> bool {
+    hard_zones(original)
+        .into_iter()
+        .map(|zone| original[zone.start..zone.end].trim())
+        .filter(|literal| !literal.is_empty())
+        .all(|literal| compact.contains(literal))
+}
+
 pub(crate) fn should_prefer_general(
     input: &str,
     tokelang_compact: &str,
