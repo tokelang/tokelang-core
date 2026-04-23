@@ -608,12 +608,13 @@ fn should_drop_token(
         return true;
     }
 
+    if matches!(lower, "need" | "needs" | "needed") {
+        return is_need_request_wrapper(previous, next, index);
+    }
+
     if matches!(
         lower,
         "want"
-            | "need"
-            | "needs"
-            | "needed"
             | "like"
             | "really"
             | "very"
@@ -634,6 +635,42 @@ fn should_drop_token(
     }
 
     false
+}
+
+fn is_need_request_wrapper(previous: Option<&String>, next: Option<&String>, index: usize) -> bool {
+    let previous_lower = previous.map(|token| token.to_ascii_lowercase());
+    let next_lower = next.map(|token| token.to_ascii_lowercase());
+
+    let previous_is_requester = previous_lower.as_deref().is_some_and(|token| {
+        matches!(token, "i" | "we" | "you" | "me" | "us" | "please" | "kindly")
+    });
+    let previous_is_auxiliary = previous_lower.as_deref().is_some_and(|token| {
+        matches!(
+            token,
+            "will"
+                | "would"
+                | "can"
+                | "could"
+                | "should"
+                | "shall"
+                | "may"
+                | "might"
+                | "must"
+                | "also"
+        )
+    });
+    let next_is_request_wrapper = next_lower.as_deref().is_some_and(|token| {
+        matches!(
+            token,
+            "a" | "an" | "the" | "to" | "help" | "somebody" | "someone" | "something"
+        ) || is_action_or_control_word(token)
+    });
+
+    ((previous_is_requester || previous_is_auxiliary) && next_is_request_wrapper)
+        || (index == 0
+            && next_lower.as_deref().is_some_and(|token| {
+                matches!(token, "help" | "somebody" | "someone" | "to")
+            }))
 }
 
 fn normalize_kept_token(token: &str) -> String {
@@ -1180,5 +1217,52 @@ mod tests {
             candidate.compact
         );
         assert!(candidate.compact.contains("similar type"));
+    }
+
+    #[test]
+    fn preserves_needs_when_it_is_semantic_content() {
+        let tokenizer = Tokenizer::detect();
+        let input = "Act as a calm mediator between roommates. Summarize both sides, identify shared needs, and suggest a fair cleaning schedule.";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("role needs prompt should compress");
+
+        assert!(
+            candidate.compact.contains("shared needs"),
+            "semantic needs should survive:\n{}",
+            candidate.compact
+        );
+    }
+
+    #[test]
+    fn still_drops_need_when_it_is_request_wrapper() {
+        let tokenizer = Tokenizer::detect();
+        let input = "I need help writing a concise status update.";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("request-wrapper prompt should compress");
+
+        assert!(candidate.compact.contains("writing concise status update"));
+        assert!(
+            !candidate.compact.contains("need help"),
+            "request wrapper should still be removed:\n{}",
+            candidate.compact
+        );
+    }
+
+    #[test]
+    fn still_drops_need_after_auxiliary_wrapper() {
+        let tokenizer = Tokenizer::detect();
+        let input = "You will need to create engaging educational content such as textbooks, online courses, and lecture notes.";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("auxiliary-wrapper prompt should compress");
+
+        assert!(candidate.compact.contains("create engaging educational content"));
+        assert!(
+            !candidate.compact.contains("need create"),
+            "auxiliary request wrapper should not survive as awkward compact text:\n{}",
+            candidate.compact
+        );
     }
 }
