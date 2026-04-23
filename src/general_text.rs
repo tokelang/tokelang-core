@@ -621,7 +621,6 @@ fn should_drop_token(
             | "thing"
             | "things"
             | "kind"
-            | "type"
     ) {
         return true;
     }
@@ -1165,5 +1164,21 @@ mod tests {
             should_prefer_general(input, lossy, &candidate),
             "candidate should beat lossy structured output:\n{candidate:#?}"
         );
+    }
+
+    #[test]
+    fn preserves_category_type_when_it_controls_role_request() {
+        let tokenizer = Tokenizer::detect();
+        let input = "Act as a travel guide. I will give you the type of places I will visit, and you should suggest places of similar type near my first location.";
+
+        let candidate =
+            candidate(input, &tokenizer).expect("role category prompt should compress");
+
+        assert!(
+            candidate.compact.contains("type"),
+            "category type should survive because it changes the request:\n{}",
+            candidate.compact
+        );
+        assert!(candidate.compact.contains("similar type"));
     }
 }
