@@ -8,9 +8,26 @@ pub struct ProtectedRange {
     pub end: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum InputMode {
+    #[default]
+    Default,
+    ContextFile,
+}
+
+impl InputMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::ContextFile => "context_file",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct CompileOptions {
     pub protected_ranges: Vec<ProtectedRange>,
+    pub mode: InputMode,
 }
 
 pub(crate) fn normalize_protected_ranges(

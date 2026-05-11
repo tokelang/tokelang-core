@@ -256,6 +256,11 @@ struct HardZone {
 
 fn hard_zones(input: &str) -> Vec<HardZone> {
     let mut zones = Vec::new();
+    // Run regex-literal and numeric-thousands collectors first so they win priority
+    // over bracket/template/delimited collectors via normalize_hard_zones's sort+dedup
+    // when zones overlap (e.g. `[a-z]+` is a regex literal, not a bracket placeholder).
+    collect_regex_literal_zones(input, &mut zones);
+    collect_numeric_thousands_zones(input, &mut zones);
     collect_bracket_placeholders(input, &mut zones);
     collect_template_placeholders(input, &mut zones);
     collect_delimited_hard_zones(input, '"', &mut zones);
@@ -263,6 +268,146 @@ fn hard_zones(input: &str) -> Vec<HardZone> {
         collect_delimited_hard_zones(input, '`', &mut zones);
     }
     normalize_hard_zones(zones)
+}
+
+fn collect_numeric_thousands_zones(input: &str, zones: &mut Vec<HardZone>) {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        let zone_start = index;
+
+        let mut cursor = index;
+        let dollar_start = cursor;
+        if bytes[cursor] == b'$' {
+            cursor += 1;
+        }
+
+        let leading_digits_start = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+        let leading_digits = cursor - leading_digits_start;
+        if !(1..=3).contains(&leading_digits) {
+            index = if cursor > zone_start { cursor } else { zone_start + 1 };
+            continue;
+        }
+
+        let mut groups = 0usize;
+        while cursor + 4 <= bytes.len()
+            && bytes[cursor] == b','
+            && bytes[cursor + 1].is_ascii_digit()
+            && bytes[cursor + 2].is_ascii_digit()
+            && bytes[cursor + 3].is_ascii_digit()
+            && (cursor + 4 == bytes.len() || !bytes[cursor + 4].is_ascii_digit())
+        {
+            cursor += 4;
+            groups += 1;
+        }
+        if groups == 0 {
+            index = if cursor > zone_start { cursor } else { zone_start + 1 };
+            continue;
+        }
+
+        if cursor < bytes.len() && bytes[cursor] == b'.' {
+            let dec_start = cursor + 1;
+            let mut dec_end = dec_start;
+            while dec_end < bytes.len() && bytes[dec_end].is_ascii_digit() {
+                dec_end += 1;
+            }
+            if dec_end > dec_start {
+                cursor = dec_end;
+            }
+        }
+
+        let preceding_ok = dollar_start == 0
+            || !matches!(bytes[dollar_start - 1], b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_');
+        if preceding_ok {
+            zones.push(HardZone {
+                start: dollar_start,
+                end: cursor,
+            });
+        }
+        index = cursor;
+    }
+}
+
+fn collect_regex_literal_zones(input: &str, zones: &mut Vec<HardZone>) {
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index].is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+
+        let token_start = index;
+        let mut cursor = index;
+        while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let token = &input[token_start..cursor];
+        if looks_like_regex_literal(token) {
+            zones.push(HardZone {
+                start: token_start,
+                end: cursor,
+            });
+        }
+        index = cursor;
+    }
+}
+
+fn looks_like_regex_literal(token: &str) -> bool {
+    if token.len() < 2 {
+        return false;
+    }
+
+    let bytes = token.as_bytes();
+    let mut idx = 0;
+    while idx + 1 < bytes.len() {
+        if bytes[idx] == b'\\' {
+            let next = bytes[idx + 1];
+            if matches!(
+                next,
+                b'd' | b'D' | b'w' | b'W' | b's' | b'S' | b'b' | b'B'
+            ) {
+                return true;
+            }
+        }
+        idx += 1;
+    }
+
+    if let Some(open) = token.find('{') {
+        if let Some(rel_close) = token[open + 1..].find('}') {
+            let inner = &token[open + 1..open + 1 + rel_close];
+            if !inner.is_empty()
+                && inner
+                    .chars()
+                    .all(|ch| ch.is_ascii_digit() || ch == ',')
+                && inner.chars().any(|ch| ch.is_ascii_digit())
+            {
+                return true;
+            }
+        }
+    }
+
+    if let Some(open) = token.find('[') {
+        if let Some(rel_close) = token[open + 1..].find(']') {
+            let inner = &token[open + 1..open + 1 + rel_close];
+            if !inner.is_empty()
+                && (inner.contains('-')
+                    || inner.starts_with('^')
+                    || inner.contains("a-z")
+                    || inner.contains("A-Z")
+                    || inner.contains("0-9"))
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn normalize_hard_zones(mut zones: Vec<HardZone>) -> Vec<HardZone> {

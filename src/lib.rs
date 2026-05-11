@@ -14,6 +14,6 @@ pub use ir::{
     BlockType, ContextFlags, Entity, OutputHint, Relation, RelationKind, SemanticFrame, SourceSpan,
     SurfaceProfile, TokelangBlock, TokelangIR, TokelangProgram,
 };
-pub use options::{CompileOptions, ProtectedRange};
+pub use options::{CompileOptions, InputMode, ProtectedRange};
 pub use symbols::{Instruction, Modifier, OutputFormat};
 pub use token_metrics::Tokenizer;

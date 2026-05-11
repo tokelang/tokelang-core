@@ -7,7 +7,7 @@ use crate::ir::{
     BlockType, SemanticFrame, SourceSpan, SurfaceProfile, TokelangBlock, TokelangIR,
     TokelangProgram,
 };
-use crate::options::{CompileOptions, ProtectedRange, normalize_protected_ranges};
+use crate::options::{CompileOptions, InputMode, ProtectedRange, normalize_protected_ranges};
 use crate::symbols::Instruction;
 use crate::token_metrics::Tokenizer;
 use crate::validator;
@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG: f64 = 15.0;
 const LOW_RISK_WORKFLOW_MIN_TOKEN_SAVINGS_PCT: f64 = 12.0;
-const COMPILE_CACHE_SCHEMA: u32 = 1;
+const COMPILE_CACHE_SCHEMA: u32 = 2;
 const MIN_CHARS_FOR_COMPILE_CACHE: usize = 256;
+const CONTEXT_FILE_RECALL_FLOOR: f64 = 0.85;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RoutingSignals {
@@ -79,6 +80,7 @@ struct CompileCacheKey {
     profile: SurfaceProfile,
     input: String,
     protected_ranges: Vec<crate::options::ProtectedRange>,
+    mode: InputMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -302,10 +304,17 @@ impl Engine {
     ) -> Result<CompileResult, EngineError> {
         let normalized_options = CompileOptions {
             protected_ranges: normalize_protected_ranges(input, &options.protected_ranges)?,
+            mode: options.mode,
         };
 
         if let Some(cached) = self.cache_lookup(input, profile, &normalized_options) {
             return Ok(cached);
+        }
+
+        if normalized_options.mode == InputMode::ContextFile {
+            let result = self.compile_context_file(input, &normalized_options);
+            self.cache_store(input, profile, &normalized_options, &result);
+            return Ok(result);
         }
 
         let result = if self.protected_content_demands_passthrough(input, &normalized_options) {
@@ -396,6 +405,37 @@ impl Engine {
         Ok(result)
     }
 
+    fn compile_context_file(&self, input: &str, options: &CompileOptions) -> CompileResult {
+        let passthrough = || CompileResult {
+            program: TokelangProgram::default(),
+            compact: input.to_string(),
+            mode: CompileMode::Passthrough,
+        };
+
+        let Some(candidate) = general_text::candidate(input, &self.tokenizer) else {
+            return passthrough();
+        };
+
+        if candidate.content_recall < CONTEXT_FILE_RECALL_FLOOR {
+            return passthrough();
+        }
+        if !general_text::hard_zones_preserved(input, &candidate.compact) {
+            return passthrough();
+        }
+        if !protected_spans_preserved_exactly(input, &candidate.compact, &options.protected_ranges) {
+            return passthrough();
+        }
+        if !validator::validate_compact(input, &candidate.compact).passed {
+            return passthrough();
+        }
+
+        CompileResult {
+            program: general_text_program(input, &candidate.compact),
+            compact: candidate.compact,
+            mode: CompileMode::Tokelang,
+        }
+    }
+
     fn validate_or_recover(
         &self,
         input: &str,
@@ -468,6 +508,7 @@ impl Engine {
             profile,
             input: input.to_string(),
             protected_ranges: options.protected_ranges.clone(),
+            mode: options.mode,
         };
         let cache = self.cache.lock().expect("compile cache poisoned");
         let cached = cache.get(&key).cloned();
@@ -496,6 +537,7 @@ impl Engine {
             profile,
             input: input.to_string(),
             protected_ranges: options.protected_ranges.clone(),
+            mode: options.mode,
         };
         self.cache
             .lock()
