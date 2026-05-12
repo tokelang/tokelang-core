@@ -1,28 +1,32 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
-const TIKTOKEN_WORKER_SCRIPT: &str = "import sys\n\
-import tiktoken\n\
-enc = tiktoken.get_encoding('cl100k_base')\n\
-stdin = sys.stdin.buffer\n\
-stdout = sys.stdout\n\
-while True:\n\
-    header = stdin.readline()\n\
-    if not header:\n\
-        break\n\
-    try:\n\
-        size = int(header)\n\
-    except ValueError:\n\
-        stdout.write('ERR\\n')\n\
-        stdout.flush()\n\
-        continue\n\
-    payload = stdin.read(size)\n\
-    if len(payload) != size:\n\
-        break\n\
-    text = payload.decode('utf-8')\n\
-    stdout.write(f\"{len(enc.encode(text))}\\n\")\n\
-    stdout.flush()\n";
+// Raw string literal — `\n\` line continuations in the previous form silently
+// stripped indentation from the Python body and made the script unparseable,
+// so every routing decision since v0.9.0 fell back to `proxy_count`.
+const TIKTOKEN_WORKER_SCRIPT: &str = r#"import sys
+import tiktoken
+enc = tiktoken.get_encoding('cl100k_base')
+stdin = sys.stdin.buffer
+stdout = sys.stdout
+while True:
+    header = stdin.readline()
+    if not header:
+        break
+    try:
+        size = int(header)
+    except ValueError:
+        stdout.write('ERR\n')
+        stdout.flush()
+        continue
+    payload = stdin.read(size)
+    if len(payload) != size:
+        break
+    text = payload.decode('utf-8')
+    stdout.write(f"{len(enc.encode(text))}\n")
+    stdout.flush()
+"#;
 
 static TIKTOKEN_WORKER: OnceLock<Mutex<TiktokenWorkerState>> = OnceLock::new();
 
@@ -77,18 +81,39 @@ impl TiktokenWorker {
             .arg(TIKTOKEN_WORKER_SCRIPT)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .ok()?;
         let stdin = child.stdin.take()?;
         let stdout = BufReader::new(child.stdout.take()?);
+        let mut stderr = child.stderr.take();
         let mut worker = Self {
             child,
             stdin,
             stdout,
         };
-        worker.count("")?;
-        Some(worker)
+        if worker.count("").is_some() {
+            return Some(worker);
+        }
+        // Handshake failed. The child has likely exited (stdout closed mid-handshake);
+        // drain its stderr so the cause isn't invisible — that silence is what hid
+        // the v0.9.0–v0.9.2 indentation bug in production.
+        let mut buf = String::new();
+        if let Some(err) = stderr.as_mut() {
+            let _ = err.read_to_string(&mut buf);
+        }
+        let trimmed = buf.trim();
+        if trimmed.is_empty() {
+            eprintln!(
+                "[tokelang] tiktoken worker handshake failed; falling back to proxy tokenizer (no stderr captured)"
+            );
+        } else {
+            eprintln!(
+                "[tokelang] tiktoken worker handshake failed; falling back to proxy tokenizer. python stderr:\n{}",
+                trimmed
+            );
+        }
+        None
     }
 
     fn count(&mut self, text: &str) -> Option<usize> {
@@ -181,4 +206,44 @@ fn proxy_count(text: &str) -> usize {
     }
 
     count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TIKTOKEN_WORKER_SCRIPT;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn worker_script_parses_as_valid_python() {
+        // Guards against regressions where the Python script's indentation gets stripped
+        // by Rust string-literal rules (the v0.9.0–v0.9.2 bug). Runs anywhere `python3`
+        // is on PATH; does not require tiktoken to be installed.
+        let mut child = match Command::new("python3")
+            .args(["-c", "import sys, ast; ast.parse(sys.stdin.read())"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("SKIP: python3 not available");
+                return;
+            }
+        };
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(TIKTOKEN_WORKER_SCRIPT.as_bytes())
+            .unwrap();
+        drop(child.stdin.take());
+        let out = child.wait_with_output().expect("wait_with_output");
+        assert!(
+            out.status.success(),
+            "TIKTOKEN_WORKER_SCRIPT is not valid Python:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
