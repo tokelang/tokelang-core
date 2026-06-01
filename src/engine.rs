@@ -905,15 +905,15 @@ fn looks_like_inline_equation(line: &str) -> bool {
         return false;
     }
 
-    let has_digit = trimmed.chars().any(|character| character.is_ascii_digit());
-    let has_operator = trimmed
+    let has_digit = trimmed.chars().any(|ch| ch.is_ascii_digit());
+    let has_math_operator = trimmed
         .chars()
-        .any(|character| matches!(character, '+' | '-' | '*' | '/' | '^' | '='));
-    let has_symbolic_variable = trimmed
-        .chars()
-        .any(|character| matches!(character, 'x' | 'y' | 'z'));
+        .any(|ch| matches!(ch, '+' | '*' | '/' | '^'));
+    let has_standalone_symbolic = trimmed
+        .split(|ch: char| !ch.is_ascii_alphabetic())
+        .any(|token| matches!(token, "x" | "y" | "z"));
 
-    has_operator && (has_digit || has_symbolic_variable)
+    has_math_operator && (has_digit || has_standalone_symbolic)
 }
 
 fn has_workflow_scaffold(input: &str) -> bool {
@@ -1158,7 +1158,7 @@ impl Default for Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompileMode, CompileResult, Engine};
+    use super::{looks_like_inline_equation, CompileMode, CompileResult, Engine};
     use crate::ir::SurfaceProfile;
     use crate::{CompileOptions, TokelangProgram};
 
@@ -1653,5 +1653,21 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
         assert_eq!(stats.entries, 2);
         assert_eq!(stats.misses, 2);
         assert_eq!(stats.hits, 0);
+    }
+
+    #[test]
+    fn inline_equation_rejects_plain_english_with_equals() {
+        assert!(!looks_like_inline_equation("tax = important"));
+        assert!(!looks_like_inline_equation("proxy = error"));
+        assert!(!looks_like_inline_equation("fix the bug = done"));
+        assert!(!looks_like_inline_equation("status = active"));
+    }
+
+    #[test]
+    fn inline_equation_accepts_real_math() {
+        assert!(looks_like_inline_equation("f(x) = x^4 - 6x^2 + 8x - 3"));
+        assert!(looks_like_inline_equation("y = 2x + 3"));
+        assert!(looks_like_inline_equation("total = price * 2"));
+        assert!(looks_like_inline_equation("result = 100/x + 3"));
     }
 }
