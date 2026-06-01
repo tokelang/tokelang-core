@@ -2,7 +2,7 @@ use crate::token_metrics::Tokenizer;
 use crate::validator;
 use std::collections::HashSet;
 
-const MIN_GENERAL_SAVINGS_PCT: f64 = 8.0;
+const MIN_GENERAL_SAVINGS_PCT: f64 = 5.0;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GeneralTextCandidate {

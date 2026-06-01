@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG: f64 = 15.0;
-const LOW_RISK_WORKFLOW_MIN_TOKEN_SAVINGS_PCT: f64 = 12.0;
+const MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG: f64 = 5.0;
+const LOW_RISK_WORKFLOW_MIN_TOKEN_SAVINGS_PCT: f64 = 3.0;
 const COMPILE_CACHE_SCHEMA: u32 = 2;
 const MIN_CHARS_FOR_COMPILE_CACHE: usize = 256;
 const CONTEXT_FILE_RECALL_FLOOR: f64 = 0.85;
