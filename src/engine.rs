@@ -1100,11 +1100,23 @@ fn count_exact_anchor_signals(input: &str, lowered: &str) -> usize {
     if lowered.contains("o(n") || lowered.contains("t(n)") {
         hits += 1;
     }
-    if input.contains('_') {
+    if has_meaningful_underscore_identifier(input) {
         hits += 1;
     }
 
     hits
+}
+
+fn has_meaningful_underscore_identifier(input: &str) -> bool {
+    input.split_whitespace().any(|token| {
+        let trimmed = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
+        trimmed.contains('_')
+            && trimmed
+                .split('_')
+                .filter(|part| !part.is_empty() && part.chars().any(|c| c.is_ascii_alphanumeric()))
+                .count()
+                >= 2
+    })
 }
 
 fn has_iso_date_like_anchor(input: &str) -> bool {
@@ -1158,7 +1170,10 @@ impl Default for Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_inline_equation, CompileMode, CompileResult, Engine};
+    use super::{
+        has_meaningful_underscore_identifier, looks_like_inline_equation, CompileMode,
+        CompileResult, Engine,
+    };
     use crate::ir::SurfaceProfile;
     use crate::{CompileOptions, TokelangProgram};
 
@@ -1669,5 +1684,20 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
         assert!(looks_like_inline_equation("y = 2x + 3"));
         assert!(looks_like_inline_equation("total = price * 2"));
         assert!(looks_like_inline_equation("result = 100/x + 3"));
+    }
+
+    #[test]
+    fn underscore_identifier_detects_snake_case() {
+        assert!(has_meaningful_underscore_identifier("customer_name"));
+        assert!(has_meaningful_underscore_identifier("Keep customer_name and ticket_id separate"));
+        assert!(has_meaningful_underscore_identifier("the user_id field"));
+    }
+
+    #[test]
+    fn underscore_identifier_rejects_non_snake_case() {
+        assert!(!has_meaningful_underscore_identifier("fix the bug"));
+        assert!(!has_meaningful_underscore_identifier("emphasis _word_ done"));
+        assert!(!has_meaningful_underscore_identifier("no underscores here"));
+        assert!(!has_meaningful_underscore_identifier("trailing_"));
     }
 }
