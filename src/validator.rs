@@ -91,6 +91,7 @@ fn lexical_tokens(input: &str) -> Vec<String> {
             || matches!(
                 ch,
                 '_' | '-' | '/' | '@' | '$' | '%' | ':' | '.' | '\'' | '+' | '#' | '='
+                | '<' | '>' | '*'
             )
         {
             current.push(ch);
@@ -300,6 +301,9 @@ fn is_exactish_token(token: &str) -> bool {
         || token.contains('%')
         || token.contains('#')
         || token.contains('=')
+        || token.contains('<')
+        || token.contains('>')
+        || token.contains('*')
         || token.contains("://")
 }
 
