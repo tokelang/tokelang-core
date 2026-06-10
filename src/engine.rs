@@ -1,3 +1,11 @@
+//! The top-level compilation facade and the Tokelang-vs-passthrough routing decision.
+//!
+//! [`Engine`] owns the compiler, tokenizer, and compile cache. It parses a prompt into the typed
+//! IR, serializes a compact candidate, then decides — via the token-savings gate and the
+//! content-recall validator — whether the compact form is safe to return ([`CompileMode::Tokelang`])
+//! or whether the original prompt should be returned verbatim ([`CompileMode::Passthrough`]).
+//! See `ARCHITECTURE.md` for the full flow and the rationale behind the layered routing guards.
+
 use crate::compiler::CompileError;
 use crate::compiler::Compiler;
 use crate::compiler::normalize;
@@ -39,14 +47,17 @@ struct RoutingSignals {
     compare_hits: usize,
 }
 
-/// Whether the final returned output is Tokelang IR or the original prompt.
+/// Whether the returned `compact` string is the compressed Tokelang form or the original prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileMode {
+    /// `compact` is the compressed form and is safe to send onward.
     Tokelang,
+    /// `compact` is the original input verbatim — compression was withheld as unsafe or not worthwhile.
     Passthrough,
 }
 
 impl CompileMode {
+    /// The wire/string label for this mode: `"tokelang"` or `"passthrough"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Tokelang => "tokelang",
@@ -55,22 +66,32 @@ impl CompileMode {
     }
 }
 
-/// Result of compiling a natural-language prompt into Tokelang.
+/// Result of compiling a natural-language prompt.
 #[derive(Debug, Clone)]
 pub struct CompileResult {
+    /// The typed program parsed from the input (present regardless of `mode`).
     pub program: TokelangProgram,
+    /// The string to send onward — compressed when `mode` is `Tokelang`, the original input
+    /// verbatim when `mode` is `Passthrough`.
     pub compact: String,
+    /// Whether `compact` is the compressed form or the untouched original.
     pub mode: CompileMode,
 }
 
-/// Local diagnostics for eval tooling and passthrough analysis.
+/// Local diagnostics for eval tooling and passthrough analysis (not part of the compile result).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PassthroughDiagnostics {
+    /// Characters covered by caller-supplied protected ranges.
     pub protected_chars: usize,
+    /// Total characters in the input.
     pub total_chars: usize,
+    /// `protected_chars` as a percentage of `total_chars`.
     pub protected_ratio_pct: f64,
+    /// Count of natural-language words detected in the input.
     pub natural_language_word_count: usize,
+    /// Whether protected content alone would force a passthrough.
     pub protected_content_passthrough: bool,
+    /// The minimum token-savings percentage required to emit Tokelang rather than pass through.
     pub passthrough_threshold_pct: f64,
 }
 
@@ -83,14 +104,22 @@ struct CompileCacheKey {
     mode: InputMode,
 }
 
+/// Hit/miss/size counters for the engine's compile cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CompileCacheStats {
+    /// Number of cache hits since construction.
     pub hits: u64,
+    /// Number of cache misses since construction.
     pub misses: u64,
+    /// Current number of cached entries.
     pub entries: usize,
 }
 
 /// Top-level facade for Tokelang compilation and compact parsing.
+///
+/// Construct once with [`Engine::new`] and reuse: the engine holds an internal compile cache and
+/// is safe to share behind a shared reference. Compilation is deterministic, so the cache only
+/// affects latency, never output.
 pub struct Engine {
     compiler: Compiler,
     tokenizer: Tokenizer,
@@ -100,6 +129,7 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Create a new engine with an empty compile cache and a detected tokenizer.
     pub fn new() -> Self {
         Self {
             compiler: Compiler::new(),
@@ -110,10 +140,15 @@ impl Engine {
         }
     }
 
+    /// Compile a prompt with default options.
+    ///
+    /// Returns a [`CompileResult`] whose `mode` indicates whether the `compact` field is the
+    /// compressed form ([`CompileMode::Tokelang`]) or the original input ([`CompileMode::Passthrough`]).
     pub fn compile(&self, input: &str) -> Result<CompileResult, EngineError> {
         self.compile_with_options(input, &CompileOptions::default())
     }
 
+    /// Compile a prompt with caller-supplied [`CompileOptions`] (input mode and protected ranges).
     pub fn compile_with_options(
         &self,
         input: &str,
@@ -122,14 +157,20 @@ impl Engine {
         self.compile_for_profile_with_options(input, SurfaceProfile::Default, options)
     }
 
+    /// Parse a compact Tokelang string back into a [`TokelangProgram`] (the inverse of emission).
     pub fn parse_compact(&self, input: &str) -> Result<TokelangProgram, EngineError> {
         Ok(TokelangProgram::parse_compact(input)?)
     }
 
+    /// Produce the candidate program for a prompt without applying the passthrough routing decision.
+    ///
+    /// Useful for eval/inspection tooling that wants the parsed IR irrespective of whether the
+    /// engine would actually emit it.
     pub fn candidate_program(&self, input: &str) -> Result<TokelangProgram, EngineError> {
         self.candidate_program_with_options(input, &CompileOptions::default())
     }
 
+    /// [`Engine::candidate_program`] with caller-supplied options.
     pub fn candidate_program_with_options(
         &self,
         input: &str,
@@ -138,6 +179,7 @@ impl Engine {
         Ok(self.compiler.compile_with_options(input, options)?)
     }
 
+    /// Snapshot of the compile cache's hit/miss/entry counters.
     pub fn compile_cache_stats(&self) -> CompileCacheStats {
         let entries = self.cache.lock().expect("compile cache poisoned").len();
         CompileCacheStats {
@@ -147,14 +189,18 @@ impl Engine {
         }
     }
 
+    /// The minimum token-savings percentage required to emit Tokelang instead of passing through.
     pub fn passthrough_threshold_pct(&self) -> f64 {
         MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG
     }
 
+    /// Compute [`PassthroughDiagnostics`] for a prompt with default options (analysis only — does
+    /// not compile).
     pub fn passthrough_diagnostics(&self, input: &str) -> PassthroughDiagnostics {
         self.passthrough_diagnostics_with_options(input, &CompileOptions::default())
     }
 
+    /// [`Engine::passthrough_diagnostics`] with caller-supplied options.
     pub fn passthrough_diagnostics_with_options(
         &self,
         input: &str,

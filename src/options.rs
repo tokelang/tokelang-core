@@ -2,20 +2,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::compiler::CompileError;
 
+/// A half-open byte range `[start, end)` in the input that must survive compression verbatim.
+///
+/// Use for spans whose exact bytes matter — quoted literals, code, identifiers. Ranges are
+/// normalized (sorted, merged, and validated against UTF-8 boundaries) before use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProtectedRange {
+    /// Inclusive start byte offset.
     pub start: usize,
+    /// Exclusive end byte offset.
     pub end: usize,
 }
 
+/// How the input is being used, which sets the engine's risk tolerance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum InputMode {
+    /// Per-call user prompts. Optimizes for savings under the safety invariant.
     #[default]
     Default,
+    /// System prompts, agent personas, and RAG headers — reused across many calls, so a higher
+    /// content-recall floor is enforced.
     ContextFile,
 }
 
 impl InputMode {
+    /// The wire/string label for this mode: `"default"` or `"context_file"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -24,9 +35,12 @@ impl InputMode {
     }
 }
 
+/// Caller-supplied inputs to a compilation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct CompileOptions {
+    /// Byte ranges to preserve verbatim (see [`ProtectedRange`]).
     pub protected_ranges: Vec<ProtectedRange>,
+    /// The input mode, which sets the recall floor (see [`InputMode`]).
     pub mode: InputMode,
 }
 
