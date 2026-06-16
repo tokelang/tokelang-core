@@ -1,3 +1,4 @@
+use crate::classify::{self, PromptRoute};
 use crate::compiler::CompileError;
 use crate::compiler::Compiler;
 use crate::compiler::normalize;
@@ -120,6 +121,14 @@ impl Engine {
         options: &CompileOptions,
     ) -> Result<CompileResult, EngineError> {
         self.compile_for_profile_with_options(input, SurfaceProfile::Default, options)
+    }
+
+    /// MEC classify-then-route (P0): the route this prompt would be dispatched
+    /// to. MEC-0 exposes this for measurement/harness use only — it does **not**
+    /// affect compile output yet (that lands in later, separately-gated MEC
+    /// iterations). Uses the cl100k token count for the short-conv cutoff.
+    pub fn classify_route(&self, input: &str) -> PromptRoute {
+        classify::classify(input, self.tokenizer.count(input))
     }
 
     pub fn parse_compact(&self, input: &str) -> Result<TokelangProgram, EngineError> {
