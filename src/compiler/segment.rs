@@ -346,9 +346,17 @@ fn is_inside_literal_payload_line(input: &str, index: usize) -> bool {
 }
 
 fn is_inside_exact_token_period(input: &str, index: usize) -> bool {
+    // Byte index of the first char *after* the last whitespace before `index`.
+    // `rfind` returns the byte offset of the START of that whitespace char, so we
+    // must advance by its UTF-8 length, not a hardcoded 1 — otherwise multibyte
+    // whitespace (e.g. U+2007 FIGURE SPACE in pasted progress bars) lands the slice
+    // below mid-character and panics. For ASCII whitespace len_utf8()==1, so this is
+    // byte-identical to the previous `offset + 1` (Rule 7).
     let line_start = input[..index]
-        .rfind(|character: char| character.is_whitespace())
-        .map(|offset| offset + 1)
+        .char_indices()
+        .rev()
+        .find(|(_, character)| character.is_whitespace())
+        .map(|(offset, character)| offset + character.len_utf8())
         .unwrap_or(0);
     let line_end = input[index..]
         .find(|character: char| character.is_whitespace())
@@ -560,6 +568,19 @@ mod tests {
         let clauses = split_clauses("(Section-A, Budget, 4.2M)", &SynonymTable::default_table());
         assert_eq!(clauses.len(), 1);
         assert_eq!(clauses[0].text, "(Section-A, Budget, 4.2M)");
+    }
+
+    #[test]
+    fn does_not_panic_on_non_ascii_whitespace_before_path_token() {
+        // Regression (External-Dogfood Sweep 2026-06-16): pasted HuggingFace/tqdm
+        // progress bars use U+2007 FIGURE SPACE (3 bytes). A period scanned with a
+        // figure space before it slid a byte slice mid-character and panicked the
+        // segmenter (segment.rs:357, is_inside_exact_token_period). Must not panic.
+        let input = "tokenizer.json:\u{2007}100%\u{2007}11.4M/11.4M\u{2007}[00:00<00:00,\u{2007}57.1MB/s]";
+        let clauses = split_clauses(input, &SynonymTable::default_table());
+        assert!(!clauses.is_empty());
+        // Minimal trigger: figure space immediately before a path-like token.
+        let _ = split_clauses("a\u{2007}b/c.d", &SynonymTable::default_table());
     }
 
     #[test]
