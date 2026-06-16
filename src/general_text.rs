@@ -638,6 +638,39 @@ fn trim_token(token: &str) -> String {
         .to_string()
 }
 
+/// A leading word that places a following subject pronoun in a request/question
+/// frame, where the pronoun is filler: "can you", "would you", "do you", "let me",
+/// "to you", "i want", "we need". In that position the pronoun is still dropped.
+fn is_request_frame_lead(word: &str) -> bool {
+    matches!(
+        word,
+        "can" | "could" | "would" | "will" | "shall" | "should" | "may" | "might"
+            | "do" | "does" | "did" | "please" | "let" | "to"
+            | "want" | "wants" | "wanted" | "need" | "needs" | "needed" | "like"
+    )
+}
+
+/// True when the token following a subject pronoun reads as a *content* verb — not
+/// an auxiliary or a request-wrapper verb. Keeps "i ran", "you create", "we tried"
+/// while still dropping "i want", "you can", "we should", so a user statement is
+/// not silently flipped into an imperative (agent/patient confusion).
+fn is_agency_subject_verb(word: &str) -> bool {
+    let aux_or_wrapper = matches!(
+        word,
+        "want" | "wants" | "wanted" | "need" | "needs" | "needed"
+            | "would" | "could" | "can" | "will" | "shall" | "should" | "may" | "might" | "must"
+            | "am" | "is" | "are" | "was" | "were" | "be" | "been" | "being"
+            | "have" | "has" | "had" | "do" | "does" | "did"
+            | "'d" | "'ll" | "'m" | "'ve" | "'re"
+            | "like" | "think" | "thought" | "guess" | "feel" | "felt" | "hope"
+            | "wish" | "believe" | "know" | "knew" | "mean" | "meant"
+    );
+    if aux_or_wrapper {
+        return false;
+    }
+    word.len() >= 2 && word.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
+}
+
 fn should_drop_token(
     lower: &str,
     previous: Option<&String>,
@@ -654,6 +687,23 @@ fn should_drop_token(
 
     if matches!(lower, "a" | "an" | "the" | "please" | "kindly" | "just") {
         return true;
+    }
+
+    // Agency preservation: a subject pronoun for a CONVERSATION PARTICIPANT
+    // (i = user, you = assistant, we = both) that is the subject of a content verb
+    // carries who-does-what. Dropping it can flip a user statement ("i ran the
+    // command") into an imperative ("ran the command") — agent/patient confusion.
+    // Keep it there; in a request/question frame ("can you ...", "i want ...") it
+    // still falls through to the drop below. Third-person pronouns (they/he/she)
+    // refer to external entities, are not agency-critical here, and are left to the
+    // normal drop (preserving them regressed a borderline prompt into lossy).
+    if matches!(lower, "i" | "you" | "we")
+        && !previous
+            .map(|p| is_request_frame_lead(&p.to_ascii_lowercase()))
+            .unwrap_or(false)
+        && next.is_some_and(|n| is_agency_subject_verb(&n.to_ascii_lowercase()))
+    {
+        return false;
     }
 
     if matches!(
@@ -1177,6 +1227,40 @@ mod tests {
         )
         .expect("short request should compress");
         assert!(candidate.compact.contains("write essay photosynthesis"));
+    }
+
+    #[test]
+    fn preserves_first_person_subject_with_content_verb() {
+        // #H (External-Dogfood Sweep): "i ran ..." must keep the subject "i" so it
+        // stays a user statement, not the imperative "ran ..." (agent/patient flip).
+        let tokenizer = Tokenizer::detect();
+        let candidate = candidate(
+            "i ran the command like you asked and now its not signing in again",
+            &tokenizer,
+        )
+        .expect("statement should compress");
+        assert!(
+            candidate.compact.to_ascii_lowercase().contains("i ran"),
+            "expected subject 'i' preserved before the verb, got: {}",
+            candidate.compact
+        );
+    }
+
+    #[test]
+    fn still_drops_pronoun_in_request_or_question_frame() {
+        // The framed "you" after "can" is filler and must still be dropped.
+        let tokenizer = Tokenizer::detect();
+        let candidate = candidate("can you give me the 2nd command in a single line", &tokenizer)
+            .expect("request should compress");
+        assert!(
+            !candidate
+                .compact
+                .to_ascii_lowercase()
+                .split_whitespace()
+                .any(|w| w == "you"),
+            "framed 'you' should be dropped, got: {}",
+            candidate.compact
+        );
     }
 
     #[test]
