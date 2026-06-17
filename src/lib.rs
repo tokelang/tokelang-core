@@ -29,6 +29,7 @@
 //! - `ARCHITECTURE.md` (repo root) — the prompt-flow walkthrough and the rationale behind the
 //!   layered routing guards.
 
+pub mod classify;
 pub mod compiler;
 pub mod engine;
 pub mod error;
@@ -39,6 +40,8 @@ pub mod symbols;
 mod token_metrics;
 mod validator;
 
+// Prompt classifier: the MEC route a prompt is dispatched to.
+pub use classify::PromptRoute;
 // Engine facade: the primary entry points and their result types.
 pub use engine::{CompileMode, CompileResult, Engine, PassthroughDiagnostics};
 pub use error::EngineError;

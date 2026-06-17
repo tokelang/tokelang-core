@@ -6,6 +6,7 @@
 //! or whether the original prompt should be returned verbatim ([`CompileMode::Passthrough`]).
 //! See `ARCHITECTURE.md` for the full flow and the rationale behind the layered routing guards.
 
+use crate::classify::{self, PromptRoute};
 use crate::compiler::CompileError;
 use crate::compiler::Compiler;
 use crate::compiler::normalize;
@@ -155,6 +156,14 @@ impl Engine {
         options: &CompileOptions,
     ) -> Result<CompileResult, EngineError> {
         self.compile_for_profile_with_options(input, SurfaceProfile::Default, options)
+    }
+
+    /// MEC classify-then-route (P0): the route this prompt would be dispatched
+    /// to. MEC-0 exposes this for measurement/harness use only — it does **not**
+    /// affect compile output yet (that lands in later, separately-gated MEC
+    /// iterations). Uses the cl100k token count for the short-conv cutoff.
+    pub fn classify_route(&self, input: &str) -> PromptRoute {
+        classify::classify(input, self.tokenizer.count(input))
     }
 
     /// Parse a compact Tokelang string back into a [`TokelangProgram`] (the inverse of emission).
