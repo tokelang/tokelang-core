@@ -1,3 +1,11 @@
+//! The top-level compilation facade and the Tokelang-vs-passthrough routing decision.
+//!
+//! [`Engine`] owns the compiler, tokenizer, and compile cache. It parses a prompt into the typed
+//! IR, serializes a compact candidate, then decides — via the token-savings gate and the
+//! content-recall validator — whether the compact form is safe to return ([`CompileMode::Tokelang`])
+//! or whether the original prompt should be returned verbatim ([`CompileMode::Passthrough`]).
+//! See `ARCHITECTURE.md` for the full flow and the rationale behind the layered routing guards.
+
 use crate::classify::{self, PromptRoute};
 use crate::compiler::CompileError;
 use crate::compiler::Compiler;
@@ -16,8 +24,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG: f64 = 15.0;
-const LOW_RISK_WORKFLOW_MIN_TOKEN_SAVINGS_PCT: f64 = 12.0;
+const MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG: f64 = 5.0;
+const LOW_RISK_WORKFLOW_MIN_TOKEN_SAVINGS_PCT: f64 = 3.0;
 const COMPILE_CACHE_SCHEMA: u32 = 2;
 const MIN_CHARS_FOR_COMPILE_CACHE: usize = 256;
 const CONTEXT_FILE_RECALL_FLOOR: f64 = 0.85;
@@ -40,14 +48,17 @@ struct RoutingSignals {
     compare_hits: usize,
 }
 
-/// Whether the final returned output is Tokelang IR or the original prompt.
+/// Whether the returned `compact` string is the compressed Tokelang form or the original prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileMode {
+    /// `compact` is the compressed form and is safe to send onward.
     Tokelang,
+    /// `compact` is the original input verbatim — compression was withheld as unsafe or not worthwhile.
     Passthrough,
 }
 
 impl CompileMode {
+    /// The wire/string label for this mode: `"tokelang"` or `"passthrough"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Tokelang => "tokelang",
@@ -56,22 +67,32 @@ impl CompileMode {
     }
 }
 
-/// Result of compiling a natural-language prompt into Tokelang.
+/// Result of compiling a natural-language prompt.
 #[derive(Debug, Clone)]
 pub struct CompileResult {
+    /// The typed program parsed from the input (present regardless of `mode`).
     pub program: TokelangProgram,
+    /// The string to send onward — compressed when `mode` is `Tokelang`, the original input
+    /// verbatim when `mode` is `Passthrough`.
     pub compact: String,
+    /// Whether `compact` is the compressed form or the untouched original.
     pub mode: CompileMode,
 }
 
-/// Local diagnostics for eval tooling and passthrough analysis.
+/// Local diagnostics for eval tooling and passthrough analysis (not part of the compile result).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PassthroughDiagnostics {
+    /// Characters covered by caller-supplied protected ranges.
     pub protected_chars: usize,
+    /// Total characters in the input.
     pub total_chars: usize,
+    /// `protected_chars` as a percentage of `total_chars`.
     pub protected_ratio_pct: f64,
+    /// Count of natural-language words detected in the input.
     pub natural_language_word_count: usize,
+    /// Whether protected content alone would force a passthrough.
     pub protected_content_passthrough: bool,
+    /// The minimum token-savings percentage required to emit Tokelang rather than pass through.
     pub passthrough_threshold_pct: f64,
 }
 
@@ -84,14 +105,22 @@ struct CompileCacheKey {
     mode: InputMode,
 }
 
+/// Hit/miss/size counters for the engine's compile cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CompileCacheStats {
+    /// Number of cache hits since construction.
     pub hits: u64,
+    /// Number of cache misses since construction.
     pub misses: u64,
+    /// Current number of cached entries.
     pub entries: usize,
 }
 
 /// Top-level facade for Tokelang compilation and compact parsing.
+///
+/// Construct once with [`Engine::new`] and reuse: the engine holds an internal compile cache and
+/// is safe to share behind a shared reference. Compilation is deterministic, so the cache only
+/// affects latency, never output.
 pub struct Engine {
     compiler: Compiler,
     tokenizer: Tokenizer,
@@ -101,6 +130,7 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Create a new engine with an empty compile cache and a detected tokenizer.
     pub fn new() -> Self {
         Self {
             compiler: Compiler::new(),
@@ -111,10 +141,15 @@ impl Engine {
         }
     }
 
+    /// Compile a prompt with default options.
+    ///
+    /// Returns a [`CompileResult`] whose `mode` indicates whether the `compact` field is the
+    /// compressed form ([`CompileMode::Tokelang`]) or the original input ([`CompileMode::Passthrough`]).
     pub fn compile(&self, input: &str) -> Result<CompileResult, EngineError> {
         self.compile_with_options(input, &CompileOptions::default())
     }
 
+    /// Compile a prompt with caller-supplied [`CompileOptions`] (input mode and protected ranges).
     pub fn compile_with_options(
         &self,
         input: &str,
@@ -131,14 +166,20 @@ impl Engine {
         classify::classify(input, self.tokenizer.count(input))
     }
 
+    /// Parse a compact Tokelang string back into a [`TokelangProgram`] (the inverse of emission).
     pub fn parse_compact(&self, input: &str) -> Result<TokelangProgram, EngineError> {
         Ok(TokelangProgram::parse_compact(input)?)
     }
 
+    /// Produce the candidate program for a prompt without applying the passthrough routing decision.
+    ///
+    /// Useful for eval/inspection tooling that wants the parsed IR irrespective of whether the
+    /// engine would actually emit it.
     pub fn candidate_program(&self, input: &str) -> Result<TokelangProgram, EngineError> {
         self.candidate_program_with_options(input, &CompileOptions::default())
     }
 
+    /// [`Engine::candidate_program`] with caller-supplied options.
     pub fn candidate_program_with_options(
         &self,
         input: &str,
@@ -147,6 +188,7 @@ impl Engine {
         Ok(self.compiler.compile_with_options(input, options)?)
     }
 
+    /// Snapshot of the compile cache's hit/miss/entry counters.
     pub fn compile_cache_stats(&self) -> CompileCacheStats {
         let entries = self.cache.lock().expect("compile cache poisoned").len();
         CompileCacheStats {
@@ -156,14 +198,18 @@ impl Engine {
         }
     }
 
+    /// The minimum token-savings percentage required to emit Tokelang instead of passing through.
     pub fn passthrough_threshold_pct(&self) -> f64 {
         MIN_TOKEN_SAVINGS_PCT_FOR_TOKELANG
     }
 
+    /// Compute [`PassthroughDiagnostics`] for a prompt with default options (analysis only — does
+    /// not compile).
     pub fn passthrough_diagnostics(&self, input: &str) -> PassthroughDiagnostics {
         self.passthrough_diagnostics_with_options(input, &CompileOptions::default())
     }
 
+    /// [`Engine::passthrough_diagnostics`] with caller-supplied options.
     pub fn passthrough_diagnostics_with_options(
         &self,
         input: &str,
@@ -914,15 +960,15 @@ fn looks_like_inline_equation(line: &str) -> bool {
         return false;
     }
 
-    let has_digit = trimmed.chars().any(|character| character.is_ascii_digit());
-    let has_operator = trimmed
+    let has_digit = trimmed.chars().any(|ch| ch.is_ascii_digit());
+    let has_math_operator = trimmed
         .chars()
-        .any(|character| matches!(character, '+' | '-' | '*' | '/' | '^' | '='));
-    let has_symbolic_variable = trimmed
-        .chars()
-        .any(|character| matches!(character, 'x' | 'y' | 'z'));
+        .any(|ch| matches!(ch, '+' | '*' | '/' | '^'));
+    let has_standalone_symbolic = trimmed
+        .split(|ch: char| !ch.is_ascii_alphabetic())
+        .any(|token| matches!(token, "x" | "y" | "z"));
 
-    has_operator && (has_digit || has_symbolic_variable)
+    has_math_operator && (has_digit || has_standalone_symbolic)
 }
 
 fn has_workflow_scaffold(input: &str) -> bool {
@@ -1109,11 +1155,23 @@ fn count_exact_anchor_signals(input: &str, lowered: &str) -> usize {
     if lowered.contains("o(n") || lowered.contains("t(n)") {
         hits += 1;
     }
-    if input.contains('_') {
+    if has_meaningful_underscore_identifier(input) {
         hits += 1;
     }
 
     hits
+}
+
+fn has_meaningful_underscore_identifier(input: &str) -> bool {
+    input.split_whitespace().any(|token| {
+        let trimmed = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
+        trimmed.contains('_')
+            && trimmed
+                .split('_')
+                .filter(|part| !part.is_empty() && part.chars().any(|c| c.is_ascii_alphanumeric()))
+                .count()
+                >= 2
+    })
 }
 
 fn has_iso_date_like_anchor(input: &str) -> bool {
@@ -1167,7 +1225,10 @@ impl Default for Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompileMode, CompileResult, Engine};
+    use super::{
+        has_meaningful_underscore_identifier, looks_like_inline_equation, CompileMode,
+        CompileResult, Engine,
+    };
     use crate::ir::SurfaceProfile;
     use crate::{CompileOptions, TokelangProgram};
 
@@ -1662,5 +1723,36 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
         assert_eq!(stats.entries, 2);
         assert_eq!(stats.misses, 2);
         assert_eq!(stats.hits, 0);
+    }
+
+    #[test]
+    fn inline_equation_rejects_plain_english_with_equals() {
+        assert!(!looks_like_inline_equation("tax = important"));
+        assert!(!looks_like_inline_equation("proxy = error"));
+        assert!(!looks_like_inline_equation("fix the bug = done"));
+        assert!(!looks_like_inline_equation("status = active"));
+    }
+
+    #[test]
+    fn inline_equation_accepts_real_math() {
+        assert!(looks_like_inline_equation("f(x) = x^4 - 6x^2 + 8x - 3"));
+        assert!(looks_like_inline_equation("y = 2x + 3"));
+        assert!(looks_like_inline_equation("total = price * 2"));
+        assert!(looks_like_inline_equation("result = 100/x + 3"));
+    }
+
+    #[test]
+    fn underscore_identifier_detects_snake_case() {
+        assert!(has_meaningful_underscore_identifier("customer_name"));
+        assert!(has_meaningful_underscore_identifier("Keep customer_name and ticket_id separate"));
+        assert!(has_meaningful_underscore_identifier("the user_id field"));
+    }
+
+    #[test]
+    fn underscore_identifier_rejects_non_snake_case() {
+        assert!(!has_meaningful_underscore_identifier("fix the bug"));
+        assert!(!has_meaningful_underscore_identifier("emphasis _word_ done"));
+        assert!(!has_meaningful_underscore_identifier("no underscores here"));
+        assert!(!has_meaningful_underscore_identifier("trailing_"));
     }
 }

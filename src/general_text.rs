@@ -2,7 +2,7 @@ use crate::token_metrics::Tokenizer;
 use crate::validator;
 use std::collections::HashSet;
 
-const MIN_GENERAL_SAVINGS_PCT: f64 = 8.0;
+const MIN_GENERAL_SAVINGS_PCT: f64 = 5.0;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GeneralTextCandidate {
@@ -263,6 +263,7 @@ fn hard_zones(input: &str) -> Vec<HardZone> {
     collect_numeric_thousands_zones(input, &mut zones);
     collect_bracket_placeholders(input, &mut zones);
     collect_template_placeholders(input, &mut zones);
+    collect_operator_zones(input, &mut zones);
     collect_delimited_hard_zones(input, '"', &mut zones);
     if !input.contains("```") {
         collect_delimited_hard_zones(input, '`', &mut zones);
@@ -408,6 +409,37 @@ fn looks_like_regex_literal(token: &str) -> bool {
     }
 
     false
+}
+
+fn collect_operator_zones(input: &str, zones: &mut Vec<HardZone>) {
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut index = 0usize;
+
+    while index < len {
+        let ch = bytes[index];
+
+        if matches!(ch, b'<' | b'>' | b'!' | b'*') {
+            let start = index;
+            if ch == b'!' && index + 1 < len && bytes[index + 1] == b'=' {
+                zones.push(HardZone { start, end: index + 2 });
+                index += 2;
+                continue;
+            }
+            if matches!(ch, b'<' | b'>') && index + 1 < len && bytes[index + 1] == b'=' {
+                zones.push(HardZone { start, end: index + 2 });
+                index += 2;
+                continue;
+            }
+            if matches!(ch, b'<' | b'>' | b'*') {
+                zones.push(HardZone { start, end: index + 1 });
+                index += 1;
+                continue;
+            }
+        }
+
+        index += 1;
+    }
 }
 
 fn normalize_hard_zones(mut zones: Vec<HardZone>) -> Vec<HardZone> {
@@ -605,6 +637,7 @@ fn lexical_tokens(input: &str) -> Vec<String> {
             || matches!(
                 ch,
                 '_' | '-' | '/' | '@' | '$' | '%' | ':' | '.' | '\'' | '+' | '#' | '='
+                | '<' | '>' | '*'
             )
         {
             current.push(ch);
