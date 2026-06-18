@@ -366,32 +366,85 @@ impl Engine {
             return Ok(cached);
         }
 
-        if normalized_options.mode == InputMode::ContextFile {
-            let result = self.compile_context_file(input, &normalized_options);
-            self.cache_store(input, profile, &normalized_options, &result);
-            return Ok(result);
+        // v0.9.6 routing: the default path is the lossless general-text fold; the instruction-IR is
+        // opt-in (`mode:"ir"`); pasted / reused content uses the literal-island `context_file` route.
+        let result = match normalized_options.mode {
+            InputMode::ContextFile => self.compile_context_file(input, &normalized_options),
+            InputMode::Ir => self.compile_ir(input, profile, &normalized_options)?,
+            InputMode::Default => self.compile_general_default(input, profile, &normalized_options),
+        };
+
+        self.cache_store(input, profile, &normalized_options, &result);
+        Ok(result)
+    }
+
+    /// The v0.9.6 default compile path: the lossless general-text fold (`general_text::candidate`)
+    /// with a passthrough fallback. The instruction-IR is never invoked, so the span-drop /
+    /// `NoSemanticContent` / contract-strip failure class (NB#29) cannot occur here. The result is
+    /// routed through [`Engine::validate_or_recover`], so any recall-floor or hard-zone breach falls
+    /// back to the original prompt verbatim (safety beats savings).
+    fn compile_general_default(
+        &self,
+        input: &str,
+        profile: SurfaceProfile,
+        options: &CompileOptions,
+    ) -> CompileResult {
+        let passthrough = || CompileResult {
+            program: TokelangProgram::default(),
+            compact: input.to_string(),
+            mode: CompileMode::Passthrough,
+        };
+
+        if self.protected_content_demands_passthrough(input, options) {
+            return passthrough();
         }
 
-        let result = if self.protected_content_demands_passthrough(input, &normalized_options) {
+        let Some(candidate) = general_text::candidate(input, &self.tokenizer) else {
+            return passthrough();
+        };
+
+        // Honor caller-supplied protected ranges: the prose fold does not special-case them, so if it
+        // did not reproduce every protected span verbatim, fail closed to passthrough (the
+        // protected-ranges contract; mirrors `compile_context_file`).
+        if !protected_spans_preserved_exactly(input, &candidate.compact, &options.protected_ranges) {
+            return passthrough();
+        }
+
+        let result = CompileResult {
+            program: general_text_program(input, &candidate.compact),
+            compact: candidate.compact,
+            mode: CompileMode::Tokelang,
+        };
+        self.validate_or_recover(input, profile, options, result)
+    }
+
+    /// Opt-in `mode:"ir"`: the pre-v0.9.6 instruction-IR path (clause segmentation + entity frames +
+    /// compact re-serialization). Demoted from the default in v0.9.6 because re-serializing from
+    /// typed blocks can silently drop source spans on multi-intent prompts (the NB#29 bug class);
+    /// retained as an opt-in mode for callers who explicitly want aggressive restructuring and accept
+    /// the recall trade-off. Behavior is byte-identical to the pre-v0.9.6 default path.
+    fn compile_ir(
+        &self,
+        input: &str,
+        profile: SurfaceProfile,
+        options: &CompileOptions,
+    ) -> Result<CompileResult, EngineError> {
+        let result = if self.protected_content_demands_passthrough(input, options) {
             CompileResult {
                 program: TokelangProgram::default(),
                 compact: input.to_string(),
                 mode: CompileMode::Passthrough,
             }
         } else {
-            match self
-                .compiler
-                .compile_with_options(input, &normalized_options)
-            {
+            match self.compiler.compile_with_options(input, options) {
                 Ok(program) => {
                     let tokelang_compact = program.to_compact_with_profile(profile);
                     let protected_spans_preserved = protected_spans_preserved_exactly(
                         input,
                         &tokelang_compact,
-                        &normalized_options.protected_ranges,
+                        &options.protected_ranges,
                     );
-                    let signals =
-                        self.routing_signals(input, &tokelang_compact, &normalized_options);
+                    let signals = self.routing_signals(input, &tokelang_compact, options);
                     let risk_passthrough = !protected_spans_preserved
                         || risk_policy_demands_passthrough(input, &signals);
                     let mode = if risk_passthrough {
@@ -455,9 +508,7 @@ impl Engine {
             }
         };
 
-        let result = self.validate_or_recover(input, profile, &normalized_options, result);
-        self.cache_store(input, profile, &normalized_options, &result);
-        Ok(result)
+        Ok(self.validate_or_recover(input, profile, options, result))
     }
 
     fn compile_context_file(&self, input: &str, options: &CompileOptions) -> CompileResult {
@@ -1230,7 +1281,7 @@ mod tests {
         CompileResult, Engine,
     };
     use crate::ir::SurfaceProfile;
-    use crate::{CompileOptions, TokelangProgram};
+    use crate::{CompileOptions, InputMode, TokelangProgram};
 
     #[test]
     fn keeps_tokelang_output_when_token_savings_clear_threshold() {
@@ -1330,11 +1381,21 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_original_prompt_when_token_savings_are_too_small() {
+    fn ir_mode_falls_back_to_original_prompt_when_token_savings_are_too_small() {
+        // mode:"ir" property (was the pre-v0.9.6 default): when the IR's compact does not clear the
+        // savings threshold it passes through but still retains the attempted compiled program. The
+        // v0.9.6 default fold instead compresses this prompt losslessly — see
+        // `default_mode_compresses_short_prompt_losslessly`.
         let engine = Engine::new();
         let prompt = "Explain AI in depth.";
+        let opts = CompileOptions {
+            mode: InputMode::Ir,
+            ..CompileOptions::default()
+        };
 
-        let result = engine.compile(prompt).expect("short prompt should compile");
+        let result = engine
+            .compile_with_options(prompt, &opts)
+            .expect("short prompt should compile");
 
         assert_eq!(result.mode, CompileMode::Passthrough);
         assert_eq!(result.compact, prompt);
@@ -1342,6 +1403,20 @@ mod tests {
             !result.program.blocks.is_empty(),
             "token-savings fallback should still retain the attempted compiled program"
         );
+    }
+
+    #[test]
+    fn default_mode_compresses_short_prompt_losslessly() {
+        // The v0.9.6 default (lossless fold) compresses a short request the IR used to pass through.
+        let engine = Engine::new();
+        let prompt = "Explain AI in depth.";
+
+        let result = engine.compile(prompt).expect("short prompt should compile");
+
+        assert_eq!(result.mode, CompileMode::Tokelang);
+        assert_ne!(result.compact, prompt);
+        let compact = result.compact.to_lowercase();
+        assert!(compact.contains("explain") && compact.contains("depth"));
     }
 
     #[test]
@@ -1566,7 +1641,10 @@ Tasks:
     }
 
     #[test]
-    fn keeps_tokelang_for_short_numbered_branch_workflow_when_compact_clears_threshold() {
+    fn ir_mode_keeps_tokelang_for_short_numbered_branch_workflow_when_compact_clears_threshold() {
+        // mode:"ir" property: the IR normalizes a numbered branch workflow into typed blocks
+        // (`define`/`compare` verbs, no awkward `stop request` adjacency). The v0.9.6 default fold is
+        // exercised by `default_mode_uses_lossless_fold_not_ir`.
         let engine = Engine::new();
         let prompt = r#"Design an experiment plan.
 
@@ -1574,9 +1652,13 @@ Tasks:
 2. If the control group is missing, stop and request it
 3. Otherwise compare the treatment outcomes
 4. Return a concise experimental protocol"#;
+        let opts = CompileOptions {
+            mode: InputMode::Ir,
+            ..CompileOptions::default()
+        };
 
         let result = engine
-            .compile(prompt)
+            .compile_with_options(prompt, &opts)
             .expect("short numbered branch workflow should compile");
 
         assert_eq!(result.mode, CompileMode::Tokelang);
@@ -1703,19 +1785,17 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
 4. Summarize the safe manual verification steps for the support agent.
 5. Return a detailed escalation memo."#;
 
+        // Profile-sensitive compact output is a mode:"ir" property (the fold is profile-agnostic);
+        // the cache is keyed on profile regardless, which is what this test pins.
+        let ir_opts = CompileOptions {
+            mode: InputMode::Ir,
+            ..CompileOptions::default()
+        };
         let default = engine
-            .compile_for_profile_with_options(
-                prompt,
-                SurfaceProfile::Default,
-                &CompileOptions::default(),
-            )
+            .compile_for_profile_with_options(prompt, SurfaceProfile::Default, &ir_opts)
             .expect("default profile compile");
         let robust = engine
-            .compile_for_profile_with_options(
-                prompt,
-                SurfaceProfile::Robust,
-                &CompileOptions::default(),
-            )
+            .compile_for_profile_with_options(prompt, SurfaceProfile::Robust, &ir_opts)
             .expect("robust profile compile");
         let stats = engine.compile_cache_stats();
 
@@ -1754,5 +1834,94 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
         assert!(!has_meaningful_underscore_identifier("emphasis _word_ done"));
         assert!(!has_meaningful_underscore_identifier("no underscores here"));
         assert!(!has_meaningful_underscore_identifier("trailing_"));
+    }
+
+    // ===== v0.9.6 IR demotion: default = lossless fold, IR = opt-in mode =====
+
+    #[test]
+    fn default_mode_uses_lossless_fold_not_ir() {
+        // Multi-intent prompt: the pre-v0.9.6 default (instruction-IR) dropped trailing clauses
+        // (NB#29). The v0.9.6 default (lossless fold) must retain every instruction and must not be
+        // the IR's block-structured serialization.
+        let engine = Engine::new();
+        let prompt =
+            "First run the tests, then commit only if they pass, and also update the changelog.";
+        let result = engine.compile(prompt).expect("default prompt should compile");
+        assert_eq!(result.mode, CompileMode::Tokelang);
+        let compact = result.compact.to_lowercase();
+        assert!(compact.contains("run") && compact.contains("tests"));
+        assert!(compact.contains("commit"));
+        assert!(
+            compact.contains("only"),
+            "the 'only if they pass' constraint must survive: {compact}"
+        );
+        assert!(
+            compact.contains("changelog"),
+            "the trailing clause the IR used to drop must survive: {compact}"
+        );
+        // The lossless fold emits a single general-text block, never the IR's `process`/`output`
+        // block markers.
+        assert_eq!(result.program.blocks.len(), 1);
+        assert!(!compact.contains("\nprocess\n") && !compact.contains("\noutput\n"));
+    }
+
+    #[test]
+    fn ir_mode_is_opt_in_and_preserves_legacy_output() {
+        // `mode:"ir"` reaches the demoted instruction-IR and reproduces the pre-v0.9.6 default
+        // output byte-for-byte (the Rule-7 legacy lock for the opt-in path).
+        let engine = Engine::new();
+        let prompt = "First, search for the Q1 sales data in the database. Then, carefully analyze the data for emerging trends. Finally, summarize the trends in a detailed report.";
+        let opts = CompileOptions {
+            mode: InputMode::Ir,
+            ..CompileOptions::default()
+        };
+        let ir = engine
+            .compile_with_options(prompt, &opts)
+            .expect("ir-mode compile");
+        assert_eq!(ir.mode, CompileMode::Tokelang);
+        assert_eq!(
+            ir.compact,
+            "input\nsearch q1 sales data db simple\nprocess\nanalyze data emerging trends detail\noutput\nsummarize trends shape report detail"
+        );
+        assert!(
+            ir.program.blocks.len() >= 2,
+            "the IR should emit multiple typed blocks"
+        );
+        // The same prompt in default mode now yields the (different) lossless fold.
+        let def = engine.compile(prompt).expect("default compile");
+        assert_ne!(def.compact, ir.compact);
+        assert_eq!(def.program.blocks.len(), 1);
+    }
+
+    #[test]
+    fn nb32_delegation_contract_survives_default_mode() {
+        // NB#32: a delegation contract that reaches default mode must keep its hard *output contract*
+        // — the pre-v0.9.6 IR destroyed these at ~48% recall (dogfood Mode C), stripping "Reply
+        // ONLY"/"No explanations". The lossless fold preserves the constraint tokens and field names.
+        // (Reusable system prompts should still prefer `mode:"context_file"`; note a field literally
+        // named after the auxiliary verb "did" is a known soft-tail drop, tracked separately.)
+        let engine = Engine::new();
+        let prompt = "Reply ONLY in the 5-field block. No explanations. No narration. Fields: status, blockers, next, nonce, summary.";
+        let result = engine.compile(prompt).expect("contract prompt should compile");
+        let compact = result.compact.to_lowercase();
+        assert!(compact.contains("only"), "the ONLY contract must survive: {compact}");
+        assert!(
+            compact.contains("no explanations"),
+            "negated constraint must survive: {compact}"
+        );
+        assert!(
+            compact.contains("no narration"),
+            "negated constraint must survive: {compact}"
+        );
+        assert!(
+            compact.contains("5-field"),
+            "the field-count spec must survive: {compact}"
+        );
+        for field in ["status", "blockers", "next", "nonce", "summary"] {
+            assert!(
+                compact.contains(field),
+                "delegation field `{field}` must survive: {compact}"
+            );
+        }
     }
 }

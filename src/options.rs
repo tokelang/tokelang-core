@@ -23,14 +23,21 @@ pub enum InputMode {
     /// System prompts, agent personas, and RAG headers — reused across many calls, so a higher
     /// content-recall floor is enforced.
     ContextFile,
+    /// Opt-in instruction-IR restructuring — the pre-v0.9.6 default path. Parses the prompt into a
+    /// clause/entity IR and re-serializes it; can raise savings on long multi-step instructions but
+    /// may drop spans on multi-intent prompts (the NB#29 bug class), which is why v0.9.6 demoted it
+    /// from the default in favor of the lossless fold. Provided for callers who explicitly opt into
+    /// aggressive restructuring and accept the recall trade-off.
+    Ir,
 }
 
 impl InputMode {
-    /// The wire/string label for this mode: `"default"` or `"context_file"`.
+    /// The wire/string label for this mode: `"default"`, `"context_file"`, or `"ir"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Default => "default",
             Self::ContextFile => "context_file",
+            Self::Ir => "ir",
         }
     }
 }

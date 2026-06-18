@@ -26,22 +26,24 @@ This is why the code has more guard rails than a naive "fold synonyms" pass woul
 
 ## Top-level flow
 
+`Engine::compile` dispatches on the input **mode** ([`InputMode`]). Since **v0.9.6** the **default**
+path is a provably-lossless lexical fold; the instruction-IR is opt-in (`mode:"ir"`).
+
 ```
-                     ┌──────────────────────────────────────────────┐
-   input: &str  ───► │  Engine::compile_with_options                │
-                     │                                              │
-                     │   1. compiler::Compiler  ── parse NL ──►      │
-                     │        TokelangProgram (typed IR + spans)    │
-                     │                                              │
-                     │   2. serialize IR ──► compact String         │
-                     │                                              │
-                     │   3. RoutingSignals  ── token-savings gate,  │
-                     │        structure/anchor heuristics ──►       │
-                     │        Tokelang  or  Passthrough?            │
-                     │                                              │
-                     │   4. validator  ── content-recall check ──►  │
-                     │        if unsafe → force Passthrough         │
-                     └──────────────────────────────────────────────┘
+   input: &str ─► Engine::compile_with_options ─► match mode:
+
+   default            ─► general_text::candidate   (lossless fold: drop only stopwords / request
+   (the lossless         wrappers it can prove are safe; keep every critical token + hard zone)
+    fold)             ─► validate_or_recover       (recall floor + critical-token + protected-span;
+                          unsafe → Passthrough)     — never invokes the IR, so it cannot drop a span
+
+   mode:"ir"          ─► compiler::Compiler ─► TokelangProgram (typed IR + source spans)
+   (opt-in,           ─► serialize IR ─► compact ─► RoutingSignals (savings / anchor gate)
+    aggressive)       ─► validate_or_recover ─► Tokelang or Passthrough
+
+   mode:"context_file"─► literal-island route (higher recall floor + hard-zone / protected-span
+   (reused / system      preservation) ─► Tokelang or Passthrough
+    prompts)
                                           │
                                           ▼
                               CompileResult { program, compact, mode }
@@ -50,25 +52,37 @@ This is why the code has more guard rails than a naive "fold synonyms" pass woul
 `mode` is a [`CompileMode`]: `Tokelang` means the `compact` string is the compressed form to send
 onward; `Passthrough` means `compact` is the original input verbatim and no compression was applied.
 
+**Why the IR is opt-in (v0.9.6).** The IR re-serializes a prompt from typed blocks, so any input span
+not assigned to a block is silently dropped — which deleted whole instructions, negations, and file
+paths on multi-intent / pasted / delegation-contract prompts (the NB#29 bug class). The default fold
+has no clause-segmentation step and therefore *cannot* drop a span: it removes only function words it
+can prove are safe, validates against the recall floor, and passes through on any doubt. The IR is
+preserved behind `mode:"ir"` for callers who explicitly want aggressive restructuring.
+
 ## Modules
 
 | Module | Role |
 |---|---|
 | `engine` | Public facade. `Engine` owns the compiler, tokenizer, and compile cache. Entry points: `compile`, `compile_with_options`, `parse_compact`. Decides Tokelang-vs-Passthrough. |
-| `compiler` | Natural-language → IR pipeline: `segment` → `normalize` → `pipeline` (parse into typed blocks with `source_span`s) → emit compact. `coverage` tracks which input spans the IR accounts for. |
-| `ir` | The typed semantic IR (`TokelangProgram`, `TokelangBlock`, `SemanticFrame`, `Entity`, `Relation`, …) and the parser that reads a compact string back into a program. |
+| `compiler` | Natural-language → IR pipeline (the opt-in `mode:"ir"` path since v0.9.6): `segment` → `normalize` → `pipeline` (parse into typed blocks with `source_span`s) → emit compact. `coverage` tracks which input spans the IR accounts for. Frozen — not the default path. |
+| `ir` | The typed semantic IR (`TokelangProgram`, `TokelangBlock`, `SemanticFrame`, `Entity`, `Relation`, …) and the parser that reads a compact string back into a program. Reached via `mode:"ir"`. |
 | `symbols` | Single source of truth for the compact vocabulary — instruction keywords, modifiers, output formats, subject abbreviations, and synonym resolution. |
-| `general_text` | Lossless general-text fold path — conservative lexical compression that provably preserves content. The direction default mode is moving toward (see "Direction"). |
+| `general_text` | **The default compile path (v0.9.6+).** Lossless general-text fold — conservative lexical compression that provably preserves content (every critical token + hard zone survives, or it passes through). |
 | `validator` | Content-recall safety net. Compares compact against the original and forces passthrough when meaning-bearing tokens are lost. |
 | `token_metrics` | Token counting. Uses `cl100k_base` via a `tiktoken` Python worker; falls back to a labelled proxy count when the worker is unavailable. |
 | `options` | `CompileOptions`, `InputMode`, and `ProtectedRange` — caller-supplied compilation inputs. |
 
 ## Input modes (`InputMode`)
 
-- **`Default`** — per-call user prompts. Optimizes for savings under the safety invariant.
-- **`ContextFile`** — system prompts, agent personas, RAG headers. Holds a higher recall floor
-  (`CONTEXT_FILE_RECALL_FLOOR = 0.85`) because these texts are reused across many calls and are
-  less tolerant of any loss.
+- **`Default`** (wire: `"default"`) — per-call user prompts. The **lossless `general_text` fold**:
+  optimizes for savings under the safety invariant; never invokes the IR.
+- **`ContextFile`** (wire: `"context_file"`) — system prompts, agent personas, RAG headers. The
+  literal-island route with a higher recall floor (`CONTEXT_FILE_RECALL_FLOOR = 0.85`) because these
+  texts are reused across many calls and are less tolerant of any loss.
+- **`Ir`** (wire: `"ir"`, also accepts `"structured"`) — opt-in instruction-IR restructuring (the
+  pre-v0.9.6 default). Aggressive clause/entity restructuring that can raise savings on long
+  multi-step instructions but may drop spans on multi-intent prompts; provided for callers who
+  explicitly accept that trade-off.
 
 ## Why the layered passthrough predicates exist
 
@@ -107,11 +121,12 @@ their bytes survive verbatim.
 
 ## Direction (forward-looking)
 
-Default mode currently routes through the full instruction-IR. The project is moving default mode
-onto the **provably-lossless `general_text` fold**, demoting the IR to an opt-in path — this
-removes a class of multi-intent span-drop failures by construction while keeping the IR available
-for callers that want richer structure. Contributors should expect `engine.rs` routing and the
-default path to be the most actively-evolving area.
+**v0.9.6 made the `general_text` fold the default and demoted the instruction-IR to opt-in
+`mode:"ir"`** — removing the multi-intent span-drop failure class (NB#29) by construction while
+keeping the IR available for callers that want richer structure. The IR (`compiler/`, `ir/`) is now
+*frozen*: no further IR development. The next direction is a classify-then-route front gate ("MEC")
+that dispatches each prompt to the cheapest safe route; it ships only once it beats the fold on
+token-weighted savings without adding lossy cases. Expect `engine.rs` routing to keep evolving there.
 
 ## Known limitations & tracked tech debt
 
