@@ -25,7 +25,10 @@
 //! - [`Engine`] — the top-level facade; `compile` / `compile_with_options` are the entry points.
 //! - [`CompileResult`] / [`CompileMode`] — what a compilation returns (and whether it compressed
 //!   or passed through).
-//! - [`CompileOptions`] / [`InputMode`] / [`ProtectedRange`] — caller-supplied inputs.
+//! - [`CompileOptions`] / [`InputMode`] / [`ProtectedRange`] — caller-supplied inputs. The default
+//!   mode is a provably-lossless lexical fold; [`InputMode::Ir`] opts into the aggressive
+//!   instruction-IR restructuring, and [`InputMode::ContextFile`] holds a higher recall floor for
+//!   reused system prompts.
 //! - `ARCHITECTURE.md` (repo root) — the prompt-flow walkthrough and the rationale behind the
 //!   layered routing guards.
 
