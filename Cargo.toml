@@ -1,8 +1,16 @@
 [package]
 name = "tokelang-core"
-version.workspace = true
-edition.workspace = true
+version = "0.9.6"
+edition = "2024"
+description = "Compression engine for Tokelang Lite: English-prompt compression middleware over standard tokenizers, with a content-recall validator and safe passthrough fallback."
+license = "Apache-2.0"
+repository = "https://github.com/tokelang/tokelang-core"
+homepage = "https://tokelang.com"
+readme = "README.md"
+keywords = ["llm", "tokenizer", "compression", "prompt", "nlp"]
+categories = ["compression", "text-processing"]
+authors = ["Tokelang"]
 
 [dependencies]
-serde.workspace = true
-thiserror.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0.11"

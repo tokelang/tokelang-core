@@ -1,17 +1,26 @@
 # tokelang-core
 
-`tokelang-core` is the compiler library for the current `v0.9.0` Tokelang Lite line.
+The compression engine behind [Tokelang](https://tokelang.com) — English-prompt compression
+middleware over standard tokenizers, with a content-recall validator and safe passthrough fallback.
 
-It owns:
+`tokelang-core` is the Rust library that powers the Tokelang Lite line. It compresses
+natural-language prompts to fewer tokens while preserving meaning, and returns the original text
+unchanged whenever compression would not be safe.
 
-- span-aware clause segmentation
-- instruction / modifier / entity / relation extraction
-- typed semantic program construction
-- compact word-based Tokelang emission
-- compact Tokelang parsing
-- compile-mode selection between Tokelang and passthrough
+## Status
 
-## Public API
+Pre-1.0 (`v0.9.x` line). The public API may change before `1.0.0`.
+
+## Install
+
+```toml
+[dependencies]
+tokelang-core = "0.9"
+```
+
+(Published to crates.io at launch.)
+
+## Quickstart
 
 ```rust
 use tokelang_core::{CompileMode, Engine};
@@ -22,16 +31,32 @@ let compiled = engine
     .unwrap();
 
 match compiled.mode {
-    CompileMode::Tokelang => {
-        let reparsed = engine.parse_compact(&compiled.compact).unwrap();
-        assert_eq!(compiled.program.to_compact(), reparsed.to_compact());
-    }
-    CompileMode::Passthrough => panic!("expected tokelang mode for this prompt"),
+    CompileMode::Tokelang => println!("compressed: {}", compiled.compact),
+    CompileMode::Passthrough => println!("kept original (compression was not safe)"),
 }
 ```
 
-## Design Notes
+## How it works
 
-- `TokelangProgram` keeps the typed internal structure; only the public surface syntax changed.
-- Compact parsing is part of the crate and must stay in sync with emission.
-- `v0.9.0` keeps the word-based public format and adds stronger structure handling, literal protection, routing policy, and caching on top of it.
+- **Default mode** — a provably-lossless general-text fold (`v0.9.6`+): safe word-level compression
+  gated by a content-recall validator. If compression would lose meaning, the engine falls back to
+  passthrough and returns the original text.
+- **`mode: "ir"`** *(opt-in)* — the structured instruction-IR path. Higher savings, but lossy on
+  some multi-intent prompts; off by default.
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design.
+
+## Token measurement
+
+All token counts use `cl100k_base` (OpenAI `tiktoken`). Character counts are never reported as token
+counts.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions are accepted under Apache-2.0 with a DCO
+sign-off (`git commit -s`).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). "Tokelang" is a trademark — see
+[`TRADEMARKS.md`](TRADEMARKS.md).
