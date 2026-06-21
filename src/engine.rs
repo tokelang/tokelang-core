@@ -406,7 +406,8 @@ impl Engine {
         // Honor caller-supplied protected ranges: the prose fold does not special-case them, so if it
         // did not reproduce every protected span verbatim, fail closed to passthrough (the
         // protected-ranges contract; mirrors `compile_context_file`).
-        if !protected_spans_preserved_exactly(input, &candidate.compact, &options.protected_ranges) {
+        if !protected_spans_preserved_exactly(input, &candidate.compact, &options.protected_ranges)
+        {
             return passthrough();
         }
 
@@ -447,6 +448,10 @@ impl Engine {
                     let signals = self.routing_signals(input, &tokelang_compact, options);
                     let risk_passthrough = !protected_spans_preserved
                         || risk_policy_demands_passthrough(input, &signals);
+                    // Two passthrough reasons (risk veto vs. insufficient savings) intentionally
+                    // share an arm; kept as distinct conditions for readability rather than
+                    // collapsed, so the duplicate-block lint is allowed here.
+                    #[allow(clippy::if_same_then_else)]
                     let mode = if risk_passthrough {
                         CompileMode::Passthrough
                     } else if signals.reduction_pct <= min_token_savings_pct_for_signals(&signals) {
@@ -528,7 +533,8 @@ impl Engine {
         if !general_text::hard_zones_preserved(input, &candidate.compact) {
             return passthrough();
         }
-        if !protected_spans_preserved_exactly(input, &candidate.compact, &options.protected_ranges) {
+        if !protected_spans_preserved_exactly(input, &candidate.compact, &options.protected_ranges)
+        {
             return passthrough();
         }
         if !validator::validate_compact(input, &candidate.compact).passed {
@@ -756,7 +762,7 @@ fn demands_math_passthrough(
         .map(str::trim)
         .any(|line| normalize::is_equation_heavy_line(line) || looks_like_inline_equation(line));
     let exactness_hits = count_contains(
-        &lowered,
+        lowered,
         &[
             "solve this exactly",
             "solve exactly",
@@ -772,7 +778,7 @@ fn demands_math_passthrough(
         ],
     );
     let math_action_hits = count_contains(
-        &lowered,
+        lowered,
         &[
             "solve",
             "compute",
@@ -790,7 +796,7 @@ fn demands_math_passthrough(
         ],
     );
     let math_topic_hits = count_contains(
-        &lowered,
+        lowered,
         &[
             "critical points",
             "local extrema",
@@ -841,11 +847,11 @@ fn demands_contract_sensitive_passthrough(
         return false;
     }
 
-    let rewrite_hits = count_contains(&lowered, &["rewrite", "adapt the tone", "adapt tone"]);
-    let translation_hits = count_contains(&lowered, &["translate"]);
-    let extraction_hits = count_contains(&lowered, &["extract", "normalize"])
+    let rewrite_hits = count_contains(lowered, &["rewrite", "adapt the tone", "adapt tone"]);
+    let translation_hits = count_contains(lowered, &["translate"]);
+    let extraction_hits = count_contains(lowered, &["extract", "normalize"])
         + count_contains(
-            &lowered,
+            lowered,
             &[
                 " fields",
                 " field",
@@ -856,7 +862,7 @@ fn demands_contract_sensitive_passthrough(
             ],
         );
     let search_hits = count_contains(
-        &lowered,
+        lowered,
         &[
             "sources",
             "source names",
@@ -870,7 +876,7 @@ fn demands_contract_sensitive_passthrough(
         ],
     );
     let tutoring_artifact_hits = count_contains(
-        &lowered,
+        lowered,
         &[
             "quiz",
             "answer key",
@@ -885,7 +891,7 @@ fn demands_contract_sensitive_passthrough(
         ],
     );
     let contract_hits = count_contains(
-        &lowered,
+        lowered,
         &[
             "return only",
             "return the",
@@ -1277,8 +1283,8 @@ impl Default for Engine {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_meaningful_underscore_identifier, looks_like_inline_equation, CompileMode,
-        CompileResult, Engine,
+        CompileMode, CompileResult, Engine, has_meaningful_underscore_identifier,
+        looks_like_inline_equation,
     };
     use crate::ir::SurfaceProfile;
     use crate::{CompileOptions, InputMode, TokelangProgram};
@@ -1824,14 +1830,18 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
     #[test]
     fn underscore_identifier_detects_snake_case() {
         assert!(has_meaningful_underscore_identifier("customer_name"));
-        assert!(has_meaningful_underscore_identifier("Keep customer_name and ticket_id separate"));
+        assert!(has_meaningful_underscore_identifier(
+            "Keep customer_name and ticket_id separate"
+        ));
         assert!(has_meaningful_underscore_identifier("the user_id field"));
     }
 
     #[test]
     fn underscore_identifier_rejects_non_snake_case() {
         assert!(!has_meaningful_underscore_identifier("fix the bug"));
-        assert!(!has_meaningful_underscore_identifier("emphasis _word_ done"));
+        assert!(!has_meaningful_underscore_identifier(
+            "emphasis _word_ done"
+        ));
         assert!(!has_meaningful_underscore_identifier("no underscores here"));
         assert!(!has_meaningful_underscore_identifier("trailing_"));
     }
@@ -1846,7 +1856,9 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
         let engine = Engine::new();
         let prompt =
             "First run the tests, then commit only if they pass, and also update the changelog.";
-        let result = engine.compile(prompt).expect("default prompt should compile");
+        let result = engine
+            .compile(prompt)
+            .expect("default prompt should compile");
         assert_eq!(result.mode, CompileMode::Tokelang);
         let compact = result.compact.to_lowercase();
         assert!(compact.contains("run") && compact.contains("tests"));
@@ -1902,9 +1914,14 @@ We are reviewing repeated recovery failures across billing address mismatch, rec
         // named after the auxiliary verb "did" is a known soft-tail drop, tracked separately.)
         let engine = Engine::new();
         let prompt = "Reply ONLY in the 5-field block. No explanations. No narration. Fields: status, blockers, next, nonce, summary.";
-        let result = engine.compile(prompt).expect("contract prompt should compile");
+        let result = engine
+            .compile(prompt)
+            .expect("contract prompt should compile");
         let compact = result.compact.to_lowercase();
-        assert!(compact.contains("only"), "the ONLY contract must survive: {compact}");
+        assert!(
+            compact.contains("only"),
+            "the ONLY contract must survive: {compact}"
+        );
         assert!(
             compact.contains("no explanations"),
             "negated constraint must survive: {compact}"

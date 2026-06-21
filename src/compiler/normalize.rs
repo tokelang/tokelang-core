@@ -214,7 +214,9 @@ pub fn canonicalize_term(term: &str) -> String {
         .collect()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+// Symmetry wrapper for `protected_ranges_with_user`; currently unreferenced but kept
+// alongside its sibling helpers, so dead-code is allowed in all build profiles.
+#[allow(dead_code)]
 pub(crate) fn protected_ranges(input: &str) -> Vec<(usize, usize)> {
     protected_ranges_with_user(input, &[])
 }

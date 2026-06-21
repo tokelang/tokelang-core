@@ -447,6 +447,9 @@ fn push_trimmed_with_base(
     ));
 }
 
+// Nine parameters thread inherited list/indent metadata through a single call site; bundling
+// them into a struct would be a structural refactor, out of scope for this fmt/clippy pass.
+#[allow(clippy::too_many_arguments)]
 fn push_trimmed_with_inherited_metadata(
     input: &str,
     start: usize,
@@ -504,13 +507,10 @@ fn strip_leading_list_marker(text: &str) -> Option<(&str, usize, ListMarkerKind)
     }
 
     let remainder = &text[digits_len..];
-    let Some(remainder) = remainder
+    let remainder = remainder
         .strip_prefix('.')
         .or_else(|| remainder.strip_prefix(')'))
-        .or_else(|| remainder.strip_prefix(':'))
-    else {
-        return None;
-    };
+        .or_else(|| remainder.strip_prefix(':'))?;
 
     let trimmed = remainder.trim_start();
     if trimmed.is_empty() {

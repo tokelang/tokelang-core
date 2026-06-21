@@ -337,7 +337,7 @@ impl Compiler {
                 )
             {
                 let cleaned = clause.cleaned_text.as_str();
-                let inherited_instruction = if is_workflow_controller_clause_text(&cleaned) {
+                let inherited_instruction = if is_workflow_controller_clause_text(cleaned) {
                     Instruction::Analyze
                 } else {
                     last_list_instruction.unwrap().instruction
@@ -428,7 +428,7 @@ impl Compiler {
                         && let Some(heading_clause) = compact_heading.as_mut()
                     {
                         let cleaned_heading = normalize::clean_input(
-                            &normalize::escape_reserved_symbols(&heading_clause.text),
+                            normalize::escape_reserved_symbols(&heading_clause.text),
                         );
                         if self.instruction_from_clause(heading_clause).is_none()
                             && is_workflow_controller_clause_text(&cleaned_heading)
@@ -616,7 +616,7 @@ impl Compiler {
             self.should_ignore_short_structured_title(index, clauses);
         if cleaned.is_empty()
             || cleaned.split_whitespace().count() > 8
-            || (!looks_like_generic_workflow_preamble(&cleaned)
+            || (!looks_like_generic_workflow_preamble(cleaned)
                 && !ignore_output_only_rules_preamble
                 && !ignore_short_controller_workflow_preamble
                 && !ignore_short_structured_title)
@@ -645,7 +645,7 @@ impl Compiler {
             }
 
             let next_cleaned = next.cleaned_text.as_str();
-            if !next_cleaned.is_empty() && !looks_like_generic_workflow_preamble(&next_cleaned) {
+            if !next_cleaned.is_empty() && !looks_like_generic_workflow_preamble(next_cleaned) {
                 return false;
             }
         }
@@ -760,7 +760,7 @@ impl Compiler {
 
         let cleaned = clause.cleaned_text.as_str();
         let words = cleaned.split_whitespace().collect::<Vec<_>>();
-        if cleaned.is_empty() || words.len() > 4 || is_workflow_controller_clause_text(&cleaned) {
+        if cleaned.is_empty() || words.len() > 4 || is_workflow_controller_clause_text(cleaned) {
             return false;
         }
 
@@ -812,7 +812,7 @@ impl Compiler {
     fn should_start_pre_task_constraint_mode(&self, index: usize, clauses: &[ClauseSpan]) -> bool {
         let clause = &clauses[index];
         let escaped = normalize::escape_reserved_symbols(&clause.text);
-        let cleaned = normalize::clean_input(&escaped);
+        let cleaned = normalize::clean_input(escaped);
         if !cleaned.contains("constraint") {
             return false;
         }
@@ -940,6 +940,10 @@ impl Compiler {
                 .is_some_and(|line| line.starts_with("return "))
                 && process_sequence > 1;
 
+            // The `workflow_return_line` and `Process` arms intentionally assign the same
+            // sequence id for two distinct routing reasons; kept separate for clarity rather
+            // than collapsed, so the duplicate-block lint is allowed here.
+            #[allow(clippy::if_same_then_else)]
             if clause.is_list_item && clause.list_marker_kind == Some(ListMarkerKind::Numbered) {
                 item.sequence_id = Some(numbered_workflow_sequence);
                 numbered_workflow_sequence += 1;
@@ -996,21 +1000,21 @@ impl Compiler {
             return Err(CompileError::NoSemanticContent);
         }
 
-        let mut flags = self.detect_flags(&words);
+        let mut flags = self.detect_flags(words);
         flags.role = None;
         flags.audience = None;
-        let mut modifiers = self.detect_modifiers(&words);
+        let mut modifiers = self.detect_modifiers(words);
         let cleaned_clause = normalize::clean_input(&normalize::strip_protected_content_with_user(
             &clause.text,
             &clause_local_protected_ranges(clause, protected_ranges),
         ));
-        let mut output_hint = self.detect_output_hint(&words);
+        let mut output_hint = self.detect_output_hint(words);
         optimize_output_hint(&mut output_hint, instruction);
-        let mut entities = self.extract_entities(&words);
+        let mut entities = self.extract_entities(words);
         optimize_entities(&mut entities, words, &cleaned_clause);
-        let relations = self.extract_relations(&words, &entities);
+        let relations = self.extract_relations(words, &entities);
         let mut literal_islands = extract_literal_islands(clause, protected_ranges);
-        let mut residual_terms = self.extract_residual_terms(&words, &entities);
+        let mut residual_terms = self.extract_residual_terms(words, &entities);
         optimize_residual_terms(&mut residual_terms, words, instruction);
         optimize_literal_islands(&mut literal_islands, &mut entities, &mut residual_terms);
 
@@ -1326,7 +1330,7 @@ impl Compiler {
             }
 
             let escaped = normalize::escape_reserved_symbols(&clause.text);
-            let cleaned = normalize::clean_input(&escaped);
+            let cleaned = normalize::clean_input(escaped);
             let words = normalize::tokenize_words(&cleaned);
             if words.is_empty() {
                 continue;
@@ -2038,7 +2042,7 @@ fn shared_phrase_score(left: &str, right: &str) -> usize {
 
 fn shared_heading_kind(clause: &ClauseSpan) -> Option<SharedHeadingKind> {
     let escaped = normalize::escape_reserved_symbols(&clause.text);
-    let cleaned = normalize::clean_input(&escaped);
+    let cleaned = normalize::clean_input(escaped);
 
     if cleaned.starts_with("step ") {
         return Some(SharedHeadingKind::Workflow(WorkflowScopeKind::Step));
@@ -2419,7 +2423,7 @@ fn looks_like_short_context_title_clause(clause: &ClauseSpan) -> bool {
 
 fn explicit_list_heading(clause: &ClauseSpan) -> Option<ExplicitListHeading> {
     let escaped = normalize::escape_reserved_symbols(&clause.text);
-    let cleaned = normalize::clean_input(&escaped);
+    let cleaned = normalize::clean_input(escaped);
     match cleaned.as_str() {
         "tasks" | "workflow" => Some(ExplicitListHeading::Tasks),
         "context" | "rules" | "input" | "inp" | "output" | "out" | "return" | "constraint"
@@ -2432,7 +2436,7 @@ fn explicit_list_heading(clause: &ClauseSpan) -> Option<ExplicitListHeading> {
 
 fn enables_list_instruction_inference(clause: &ClauseSpan) -> bool {
     let escaped = normalize::escape_reserved_symbols(&clause.text);
-    let cleaned = normalize::clean_input(&escaped);
+    let cleaned = normalize::clean_input(escaped);
     cleaned.starts_with("step ")
         || cleaned.starts_with("phase ")
         || cleaned.starts_with("stage ")
@@ -2471,7 +2475,7 @@ fn is_mergeable_controller_tail_clause(existing: &ClauseSpan, clause: &ClauseSpa
     let existing_cleaned = existing.cleaned_text.as_str();
     let clause_cleaned = clause.cleaned_text.as_str();
     let tail_lead = clause_cleaned.split_whitespace().next().unwrap_or_default();
-    if !is_workflow_controller_clause_text(&existing_cleaned)
+    if !is_workflow_controller_clause_text(existing_cleaned)
         || clause_cleaned.is_empty()
         || clause_cleaned.split_whitespace().count() > 4
         || rewrite_output_metadata_clause(clause, false).is_some()
@@ -2616,21 +2620,20 @@ fn rewrite_output_metadata_clause(
         }
     }
 
-    if workflow_output_mode {
-        if let Some(remainder) = cleaned.strip_prefix("list ")
-            && !remainder.is_empty()
-        {
-            let target = preserve_short_output_phrase(remainder, true);
-            return Some(ClauseSpan::new(
-                clause.start,
-                clause.end,
-                format!("return {target}"),
-                clause.marker,
-                clause.indent,
-                clause.is_list_item,
-                clause.list_marker_kind,
-            ));
-        }
+    if workflow_output_mode
+        && let Some(remainder) = cleaned.strip_prefix("list ")
+        && !remainder.is_empty()
+    {
+        let target = preserve_short_output_phrase(remainder, true);
+        return Some(ClauseSpan::new(
+            clause.start,
+            clause.end,
+            format!("return {target}"),
+            clause.marker,
+            clause.indent,
+            clause.is_list_item,
+            clause.list_marker_kind,
+        ));
     }
 
     if matches!(cleaned.as_str(), "conclusion" | "conclude") {
@@ -2929,15 +2932,15 @@ fn apply_structure_compact_override(clause: &ClauseSpan, item: &mut TokelangIR) 
             return;
         }
 
-        if let Some((condition, action)) = split_controller_condition_action(remainder) {
-            if let Some(action_text) = compact_controller_action(&action, item) {
-                item.compact_override = Some(format!(
-                    "if {} {}",
-                    compact_condition_phrase(&condition),
-                    action_text
-                ));
-                return;
-            }
+        if let Some((condition, action)) = split_controller_condition_action(remainder)
+            && let Some(action_text) = compact_controller_action(&action, item)
+        {
+            item.compact_override = Some(format!(
+                "if {} {}",
+                compact_condition_phrase(&condition),
+                action_text
+            ));
+            return;
         }
     }
 
@@ -3710,7 +3713,7 @@ fn should_keep_backtick_literal(text: &str) -> bool {
 }
 
 fn optimize_literal_islands(
-    literal_islands: &mut Vec<String>,
+    literal_islands: &mut [String],
     entities: &mut Vec<MatchedEntity>,
     residual_terms: &mut Vec<String>,
 ) {
@@ -3731,7 +3734,7 @@ fn optimize_literal_islands(
         phrase_keys.insert(normalize::canonicalize_term(&cleaned));
         let cleaned_words = normalize::tokenize_words(&cleaned);
         for word in &cleaned_words {
-            word_keys.insert(normalize::canonicalize_term(&word));
+            word_keys.insert(normalize::canonicalize_term(word));
         }
         if literal.contains('_')
             || literal.contains('/')
