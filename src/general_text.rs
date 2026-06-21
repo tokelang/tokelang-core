@@ -290,7 +290,11 @@ fn collect_numeric_thousands_zones(input: &str, zones: &mut Vec<HardZone>) {
         }
         let leading_digits = cursor - leading_digits_start;
         if !(1..=3).contains(&leading_digits) {
-            index = if cursor > zone_start { cursor } else { zone_start + 1 };
+            index = if cursor > zone_start {
+                cursor
+            } else {
+                zone_start + 1
+            };
             continue;
         }
 
@@ -306,7 +310,11 @@ fn collect_numeric_thousands_zones(input: &str, zones: &mut Vec<HardZone>) {
             groups += 1;
         }
         if groups == 0 {
-            index = if cursor > zone_start { cursor } else { zone_start + 1 };
+            index = if cursor > zone_start {
+                cursor
+            } else {
+                zone_start + 1
+            };
             continue;
         }
 
@@ -369,42 +377,37 @@ fn looks_like_regex_literal(token: &str) -> bool {
     while idx + 1 < bytes.len() {
         if bytes[idx] == b'\\' {
             let next = bytes[idx + 1];
-            if matches!(
-                next,
-                b'd' | b'D' | b'w' | b'W' | b's' | b'S' | b'b' | b'B'
-            ) {
+            if matches!(next, b'd' | b'D' | b'w' | b'W' | b's' | b'S' | b'b' | b'B') {
                 return true;
             }
         }
         idx += 1;
     }
 
-    if let Some(open) = token.find('{') {
-        if let Some(rel_close) = token[open + 1..].find('}') {
-            let inner = &token[open + 1..open + 1 + rel_close];
-            if !inner.is_empty()
-                && inner
-                    .chars()
-                    .all(|ch| ch.is_ascii_digit() || ch == ',')
-                && inner.chars().any(|ch| ch.is_ascii_digit())
-            {
-                return true;
-            }
+    if let Some(open) = token.find('{')
+        && let Some(rel_close) = token[open + 1..].find('}')
+    {
+        let inner = &token[open + 1..open + 1 + rel_close];
+        if !inner.is_empty()
+            && inner.chars().all(|ch| ch.is_ascii_digit() || ch == ',')
+            && inner.chars().any(|ch| ch.is_ascii_digit())
+        {
+            return true;
         }
     }
 
-    if let Some(open) = token.find('[') {
-        if let Some(rel_close) = token[open + 1..].find(']') {
-            let inner = &token[open + 1..open + 1 + rel_close];
-            if !inner.is_empty()
-                && (inner.contains('-')
-                    || inner.starts_with('^')
-                    || inner.contains("a-z")
-                    || inner.contains("A-Z")
-                    || inner.contains("0-9"))
-            {
-                return true;
-            }
+    if let Some(open) = token.find('[')
+        && let Some(rel_close) = token[open + 1..].find(']')
+    {
+        let inner = &token[open + 1..open + 1 + rel_close];
+        if !inner.is_empty()
+            && (inner.contains('-')
+                || inner.starts_with('^')
+                || inner.contains("a-z")
+                || inner.contains("A-Z")
+                || inner.contains("0-9"))
+        {
+            return true;
         }
     }
 
@@ -422,17 +425,26 @@ fn collect_operator_zones(input: &str, zones: &mut Vec<HardZone>) {
         if matches!(ch, b'<' | b'>' | b'!' | b'*') {
             let start = index;
             if ch == b'!' && index + 1 < len && bytes[index + 1] == b'=' {
-                zones.push(HardZone { start, end: index + 2 });
+                zones.push(HardZone {
+                    start,
+                    end: index + 2,
+                });
                 index += 2;
                 continue;
             }
             if matches!(ch, b'<' | b'>') && index + 1 < len && bytes[index + 1] == b'=' {
-                zones.push(HardZone { start, end: index + 2 });
+                zones.push(HardZone {
+                    start,
+                    end: index + 2,
+                });
                 index += 2;
                 continue;
             }
             if matches!(ch, b'<' | b'>' | b'*') {
-                zones.push(HardZone { start, end: index + 1 });
+                zones.push(HardZone {
+                    start,
+                    end: index + 1,
+                });
                 index += 1;
                 continue;
             }
@@ -636,8 +648,20 @@ fn lexical_tokens(input: &str) -> Vec<String> {
         if ch.is_alphanumeric()
             || matches!(
                 ch,
-                '_' | '-' | '/' | '@' | '$' | '%' | ':' | '.' | '\'' | '+' | '#' | '='
-                | '<' | '>' | '*'
+                '_' | '-'
+                    | '/'
+                    | '@'
+                    | '$'
+                    | '%'
+                    | ':'
+                    | '.'
+                    | '\''
+                    | '+'
+                    | '#'
+                    | '='
+                    | '<'
+                    | '>'
+                    | '*'
             )
         {
             current.push(ch);
@@ -792,14 +816,7 @@ fn should_drop_token(
 
     if matches!(
         lower,
-        "want"
-            | "like"
-            | "really"
-            | "very"
-            | "some"
-            | "thing"
-            | "things"
-            | "kind"
+        "want" | "like" | "really" | "very" | "some" | "thing" | "things" | "kind"
     ) {
         return true;
     }
@@ -820,7 +837,10 @@ fn is_need_request_wrapper(previous: Option<&String>, next: Option<&String>, ind
     let next_lower = next.map(|token| token.to_ascii_lowercase());
 
     let previous_is_requester = previous_lower.as_deref().is_some_and(|token| {
-        matches!(token, "i" | "we" | "you" | "me" | "us" | "please" | "kindly")
+        matches!(
+            token,
+            "i" | "we" | "you" | "me" | "us" | "please" | "kindly"
+        )
     });
     let previous_is_auxiliary = previous_lower.as_deref().is_some_and(|token| {
         matches!(
@@ -846,9 +866,9 @@ fn is_need_request_wrapper(previous: Option<&String>, next: Option<&String>, ind
 
     ((previous_is_requester || previous_is_auxiliary) && next_is_request_wrapper)
         || (index == 0
-            && next_lower.as_deref().is_some_and(|token| {
-                matches!(token, "help" | "somebody" | "someone" | "to")
-            }))
+            && next_lower
+                .as_deref()
+                .is_some_and(|token| matches!(token, "help" | "somebody" | "someone" | "to")))
 }
 
 fn normalize_kept_token(token: &str) -> String {
@@ -1386,8 +1406,7 @@ mod tests {
         let tokenizer = Tokenizer::detect();
         let input = "Act as a travel guide. I will give you the type of places I will visit, and you should suggest places of similar type near my first location.";
 
-        let candidate =
-            candidate(input, &tokenizer).expect("role category prompt should compress");
+        let candidate = candidate(input, &tokenizer).expect("role category prompt should compress");
 
         assert!(
             candidate.compact.contains("type"),
@@ -1402,8 +1421,7 @@ mod tests {
         let tokenizer = Tokenizer::detect();
         let input = "Act as a calm mediator between roommates. Summarize both sides, identify shared needs, and suggest a fair cleaning schedule.";
 
-        let candidate =
-            candidate(input, &tokenizer).expect("role needs prompt should compress");
+        let candidate = candidate(input, &tokenizer).expect("role needs prompt should compress");
 
         assert!(
             candidate.compact.contains("shared needs"),
@@ -1436,7 +1454,11 @@ mod tests {
         let candidate =
             candidate(input, &tokenizer).expect("auxiliary-wrapper prompt should compress");
 
-        assert!(candidate.compact.contains("create engaging educational content"));
+        assert!(
+            candidate
+                .compact
+                .contains("create engaging educational content")
+        );
         assert!(
             !candidate.compact.contains("need create"),
             "auxiliary request wrapper should not survive as awkward compact text:\n{}",

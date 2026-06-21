@@ -59,27 +59,88 @@ const SHORT_CONV_MAX_TOKENS: usize = 20;
 /// word only). `do` doubles as an interrogative opener but is treated as
 /// imperative here, matching the prototype.
 const IMPERATIVE_VERBS: &[&str] = &[
-    "add", "make", "update", "fix", "change", "create", "run", "build", "write", "implement",
-    "remove", "delete", "use", "check", "read", "push", "deploy", "generate", "refactor", "move",
-    "rename", "set", "give", "show", "list", "explain", "analyze", "analyse", "do", "let", "lets",
-    "please", "ensure", "consider", "look", "find", "test", "review", "go", "continue", "pick",
-    "start", "keep", "put", "include", "provide", "modify", "convert", "extract", "merge", "split",
-    "install", "enable", "disable", "drop", "save", "commit", "send",
+    "add",
+    "make",
+    "update",
+    "fix",
+    "change",
+    "create",
+    "run",
+    "build",
+    "write",
+    "implement",
+    "remove",
+    "delete",
+    "use",
+    "check",
+    "read",
+    "push",
+    "deploy",
+    "generate",
+    "refactor",
+    "move",
+    "rename",
+    "set",
+    "give",
+    "show",
+    "list",
+    "explain",
+    "analyze",
+    "analyse",
+    "do",
+    "let",
+    "lets",
+    "please",
+    "ensure",
+    "consider",
+    "look",
+    "find",
+    "test",
+    "review",
+    "go",
+    "continue",
+    "pick",
+    "start",
+    "keep",
+    "put",
+    "include",
+    "provide",
+    "modify",
+    "convert",
+    "extract",
+    "merge",
+    "split",
+    "install",
+    "enable",
+    "disable",
+    "drop",
+    "save",
+    "commit",
+    "send",
 ];
 
 /// Leading interrogative openers (checked as the first word only).
 const INTERROGATIVES: &[&str] = &[
-    "is", "are", "am", "can", "could", "do", "does", "did", "should", "would", "will", "why", "how",
-    "hows", "what", "whats", "which", "who", "where", "when", "whose", "isnt", "arent", "dont",
-    "wont",
+    "is", "are", "am", "can", "could", "do", "does", "did", "should", "would", "will", "why",
+    "how", "hows", "what", "whats", "which", "who", "where", "when", "whose", "isnt", "arent",
+    "dont", "wont",
 ];
 
 /// Embedded markers that signal a question even mid-sentence (e.g. tag
 /// questions). Matched with a leading word boundary so `or not` does not fire on
 /// `for not`.
 const EMBEDDED_QUESTION_MARKERS: &[&str] = &[
-    "is it", "are they", "are these", "is that", "right?", "isnt it", "isn't it", "or not", "fine?",
-    "ok?", "okay?",
+    "is it",
+    "are they",
+    "are these",
+    "is that",
+    "right?",
+    "isnt it",
+    "isn't it",
+    "or not",
+    "fine?",
+    "ok?",
+    "okay?",
 ];
 
 /// Classify `input` into its MEC route. `token_count` is the cl100k token count
@@ -281,17 +342,35 @@ mod tests {
 
     #[test]
     fn short_non_imperative_is_short_conv() {
-        assert_eq!(route("how do i run it? is it in apps?", 10), PromptRoute::ShortConv);
-        assert_eq!(route("okay what do you want me to do now?", 9), PromptRoute::ShortConv);
-        assert_eq!(route("its not a ipynb is it fine ?", 8), PromptRoute::ShortConv);
+        assert_eq!(
+            route("how do i run it? is it in apps?", 10),
+            PromptRoute::ShortConv
+        );
+        assert_eq!(
+            route("okay what do you want me to do now?", 9),
+            PromptRoute::ShortConv
+        );
+        assert_eq!(
+            route("its not a ipynb is it fine ?", 8),
+            PromptRoute::ShortConv
+        );
         assert_eq!(route("yeah that works", 3), PromptRoute::ShortConv);
     }
 
     #[test]
     fn short_conv_boundary_is_inclusive_at_20() {
-        assert_eq!(route("a fairly short status note that we kept around twenty", 20), PromptRoute::ShortConv);
+        assert_eq!(
+            route("a fairly short status note that we kept around twenty", 20),
+            PromptRoute::ShortConv
+        );
         // 21 tokens, non-imperative, no question form -> Other
-        assert_eq!(route("a fairly short status note that we kept around twenty one", 21), PromptRoute::Other);
+        assert_eq!(
+            route(
+                "a fairly short status note that we kept around twenty one",
+                21
+            ),
+            PromptRoute::Other
+        );
     }
 
     #[test]
@@ -310,9 +389,15 @@ mod tests {
     #[test]
     fn imperative_beats_short_and_question() {
         assert_eq!(route("fix the bug", 3), PromptRoute::Instruction);
-        assert_eq!(route("update it in the md files", 7), PromptRoute::Instruction);
+        assert_eq!(
+            route("update it in the md files", 7),
+            PromptRoute::Instruction
+        );
         // "do we have work?" -> first word "do" is imperative-listed -> Instruction
-        assert_eq!(route("do we have work or not?", 6), PromptRoute::Instruction);
+        assert_eq!(
+            route("do we have work or not?", 6),
+            PromptRoute::Instruction
+        );
     }
 
     #[test]
@@ -331,23 +416,41 @@ mod tests {
 
     #[test]
     fn paste_detected_by_newlines() {
-        assert_eq!(route("line one\nline two\nline three\nline four", 12), PromptRoute::Paste);
+        assert_eq!(
+            route("line one\nline two\nline three\nline four", 12),
+            PromptRoute::Paste
+        );
         // priority: short by tokens but multi-line -> Paste
         assert_eq!(route("a\nb\nc\nd", 4), PromptRoute::Paste);
     }
 
     #[test]
     fn paste_detected_by_terminal_markers() {
-        assert_eq!(route("root@docker:~# git fetch --prune origin", 12), PromptRoute::Paste);
-        assert_eq!(route("tokenizer.json: 100% 11.4M/11.4M done", 12), PromptRoute::Paste);
-        assert_eq!(route("here is the code: ```rust fn main(){}```", 12), PromptRoute::Paste);
+        assert_eq!(
+            route("root@docker:~# git fetch --prune origin", 12),
+            PromptRoute::Paste
+        );
+        assert_eq!(
+            route("tokenizer.json: 100% 11.4M/11.4M done", 12),
+            PromptRoute::Paste
+        );
+        assert_eq!(
+            route("here is the code: ```rust fn main(){}```", 12),
+            PromptRoute::Paste
+        );
         assert_eq!(route(">>> import torch", 4), PromptRoute::Paste);
     }
 
     #[test]
     fn paste_detected_by_markdown_header() {
-        assert_eq!(route("# AGENTS.md instructions for the repo", 8), PromptRoute::Paste);
-        assert_eq!(route("### section three of the doc here", 7), PromptRoute::Paste);
+        assert_eq!(
+            route("# AGENTS.md instructions for the repo", 8),
+            PromptRoute::Paste
+        );
+        assert_eq!(
+            route("### section three of the doc here", 7),
+            PromptRoute::Paste
+        );
     }
 
     #[test]
@@ -362,7 +465,10 @@ mod tests {
     #[test]
     fn contains_word_respects_leading_boundary() {
         // "or not" must not fire inside "for not"
-        assert!(!contains_word("we waited for not very long today", "or not"));
+        assert!(!contains_word(
+            "we waited for not very long today",
+            "or not"
+        ));
         assert!(contains_word("should we ship it or not today", "or not"));
         assert!(contains_word("or not at the very start", "or not"));
     }

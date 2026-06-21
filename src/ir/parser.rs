@@ -214,22 +214,22 @@ fn parse_frame_tokens(tokens: &[&str]) -> SemanticFrame {
             continue;
         }
 
-        if let Some(relation_kind) = relation_kind_for(token) {
-            if let (Some(from), Some(to)) = (
+        if let Some(relation_kind) = relation_kind_for(token)
+            && let (Some(from), Some(to)) = (
                 frame.residual_terms.last().cloned(),
                 tokens.get(index + 1).map(|value| value.to_string()),
-            ) {
-                push_entity(&mut frame, &from);
-                push_entity(&mut frame, &to);
-                frame.relations.push(Relation {
-                    from,
-                    kind: relation_kind,
-                    to: to.clone(),
-                });
-                frame.residual_terms.push(to);
-                index += 2;
-                continue;
-            }
+            )
+        {
+            push_entity(&mut frame, &from);
+            push_entity(&mut frame, &to);
+            frame.relations.push(Relation {
+                from,
+                kind: relation_kind,
+                to: to.clone(),
+            });
+            frame.residual_terms.push(to);
+            index += 2;
+            continue;
         }
 
         frame.residual_terms.push(token.to_string());

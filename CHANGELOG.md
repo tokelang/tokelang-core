@@ -13,6 +13,13 @@ while pre-1.0, minor versions may include breaking API changes.
 - Crate metadata for crates.io publishing (`license`, `description`, `repository`, `keywords`,
   `categories`).
 
+### Changed
+
+- CI now enforces `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings`
+  as a hard gate (previously informational). The engine source was formatted and cleared of all
+  clippy findings; default-mode `compile` output is byte-identical (full test suite plus a targeted
+  before/after dump verified — no behavior change).
+
 ## [0.9.6]
 
 ### Changed
