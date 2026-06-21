@@ -24,16 +24,19 @@ jobs:
   lint:
     name: fmt + clippy (informational)
     runs-on: ubuntu-latest
-    # Not yet a hard gate: the engine predates rustfmt/clippy enforcement and
-    # has a pending fmt + clippy cleanup. Flip continue-on-error off once clean.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # Not yet a hard gate: the engine predates rustfmt/clippy enforcement and has
+      # a pending cleanup. continue-on-error is set per-step so the steps still run
+      # and surface findings, but the job concludes green. Remove both once clean to
+      # make this blocking.
       - name: Format
         run: cargo fmt --all -- --check
+        continue-on-error: true
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true
