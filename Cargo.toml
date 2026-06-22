@@ -2,6 +2,7 @@
 name = "tokelang-core"
 version = "0.9.6"
 edition = "2024"
+rust-version = "1.88"
 description = "Compression engine for Tokelang Lite: English-prompt compression middleware over standard tokenizers, with a content-recall validator and safe passthrough fallback."
 license = "Apache-2.0"
 repository = "https://github.com/tokelang/tokelang-core"

@@ -12,6 +12,9 @@ while pre-1.0, minor versions may include breaking API changes.
   `CODE_OF_CONDUCT`, `TRADEMARKS`, CI workflow, and issue/PR templates.
 - Crate metadata for crates.io publishing (`license`, `description`, `repository`, `keywords`,
   `categories`).
+- Declared minimum supported Rust version (`rust-version = "1.88"`), verified by building and
+  running the full test suite on 1.88 (the floor required by the crate's `let`-chains).
+- CI and license status badges in the README.
 
 ### Changed
 
