@@ -346,9 +346,16 @@ fn is_inside_literal_payload_line(input: &str, index: usize) -> bool {
 }
 
 fn is_inside_exact_token_period(input: &str, index: usize) -> bool {
+    // Char-boundary-aware: `rfind` returns the byte offset of the *start* of the
+    // whitespace char; `offset + 1` assumed a 1-byte (ASCII) space and sliced mid-char
+    // for multibyte whitespace (e.g. U+2007 FIGURE SPACE in pasted tqdm/HuggingFace
+    // progress bars), panicking on `input[line_start..]`. Advance by the char's real
+    // byte length instead. Byte-identical for ASCII whitespace (len_utf8() == 1).
     let line_start = input[..index]
-        .rfind(|character: char| character.is_whitespace())
-        .map(|offset| offset + 1)
+        .char_indices()
+        .rev()
+        .find(|(_, character)| character.is_whitespace())
+        .map(|(offset, character)| offset + character.len_utf8())
         .unwrap_or(0);
     let line_end = input[index..]
         .find(|character: char| character.is_whitespace())
@@ -648,5 +655,27 @@ mod tests {
             clauses[0].text,
             "Verify the onboarding link https://tokelang.com/docs before the rollout"
         );
+    }
+
+    #[test]
+    fn is_inside_exact_token_period_handles_multibyte_whitespace() {
+        // Regression: U+2007 FIGURE SPACE (3 bytes) before a path-ish token used to make
+        // `line_start = offset + 1` land mid-char and panic on the slice. Must not panic,
+        // and must still recognise the path token after the exotic whitespace.
+        let input = "x\u{2007}path/to.file";
+        let period = input.find('.').unwrap();
+        assert!(is_inside_exact_token_period(input, period));
+    }
+
+    #[test]
+    fn does_not_panic_on_tqdm_progress_bar_with_figure_space() {
+        // Real dogfood crash shape (yuva-codex-0766): pasted HuggingFace/tqdm output whose
+        // padding is U+2007. The `.json` period triggers path detection, which scans back to
+        // the figure space. Pre-fix this panicked; post-fix it compresses cleanly.
+        let clauses = split_clauses(
+            "special_tokens_map.json:\u{2007}100%\n\u{2007}614/614\u{2007}[00:00<00:00,\u{2007}80.5kB/s]",
+            &SynonymTable::default_table(),
+        );
+        assert!(!clauses.is_empty());
     }
 }
