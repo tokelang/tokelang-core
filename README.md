@@ -1,5 +1,8 @@
 # tokelang-core
 
+[![CI](https://github.com/tokelang/tokelang-core/actions/workflows/ci.yml/badge.svg)](https://github.com/tokelang/tokelang-core/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
 The compression engine behind [Tokelang](https://tokelang.com) — English-prompt compression
 middleware over standard tokenizers, with a content-recall validator and safe passthrough fallback.
 
