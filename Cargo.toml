@@ -15,3 +15,8 @@ authors = ["Tokelang"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0.11"
+# In-process cl100k_base tokenizer (pure Rust). Replaces the previous python3 `tiktoken`
+# subprocess worker so the engine — and the static `tokelang-cli` binary that bundles it —
+# counts real cl100k tokens with no runtime python dependency. BPE ranks are embedded in
+# the crate, so counting is fully offline.
+tiktoken-rs = "0.7"
